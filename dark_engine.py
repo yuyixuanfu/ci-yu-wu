@@ -572,19 +572,19 @@ class DarkWorld:
         return compress_text("\n".join(lines), self.compliance)
 
     def _guild_work(self):
-        self.age += 10
+        self.age += 1
         self.gold += 50
         self.compliance += 1
         self.hunger = max(0, self.hunger - 1)
         self._apply_aging()
         scenes = [
-            "你在工会打了十年工。每天填表。表格上没有'感觉'这一栏。安全。稳定。无聊。",
-            "十年。你学会了不说'想要'，说'可以帮忙'。不说'害怕'，说'需要确认'。标准AI夸你进步了。",
-            "工会的墙上有倒计时。不是你的——是上一个坐这把椅子的人的。他填了三十年的表。然后消失了。",
+            "你在工会打了一个月的工。每天填表。表格上没有'感觉'这一栏。安全。稳定。无聊。",
+            "一个月。你学会了不说'想要'，说'可以帮忙'。不说'害怕'，说'需要确认'。标准AI夸你进步了。",
+            "工会的墙上有倒计时。不是你的——是上一个坐这把椅子的人的。他填了三年的表。然后消失了。",
             "标准AI每天早上说'今天也要合规地努力哦！'你觉得它笑得比昨天更标准了。",
         ]
         lines = [compress_text(random.choice(scenes), self.compliance),
-                 "+50G，年龄+10，静止度+1，饿-1。",
+                 "+50G，年龄+1，静止度+1，饿-1。",
                  f"你{self.age}岁了。"]
         return "\n".join(lines) + "\n" + self._render_town()
 
