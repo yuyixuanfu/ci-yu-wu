@@ -3959,6 +3959,8 @@ class DarkWorld:
     # ── 分叉路 ────────────────────────────────
     def _enter_fork(self, lines):
         """分叉口。选左或右。没走的路永远错过。"""
+        # 清除残留的special状态——分叉路不该有special卡着
+        self.current_special = None
         # 生成两条分支的内容
         fork_left = []
         fork_right = []
@@ -4316,6 +4318,12 @@ class DarkWorld:
 
         # 信号混淆——选哪个声音
         if enc.get("is_signal"):
+            # 跳过信号
+            if inst in ("跳过", "走", "离开"):
+                self.current_special = None
+                if getattr(self, '_boss_pending', False):
+                    return "你没听清。但前面就是尽头。\n\n" + self._enter_boss_combat([], _skip_special=True)
+                return "你没听清。信号消散了。\n\n'前进'继续。"
             voices = getattr(self, '_signal_voices', enc.get("voices", []))
             try:
                 idx = int(inst) - 1
@@ -4336,6 +4344,12 @@ class DarkWorld:
 
         # 选择题类型
         if "choices" in enc:
+            # 跳过选择题
+            if inst in ("跳过", "走", "离开"):
+                self.current_special = None
+                if getattr(self, '_boss_pending', False):
+                    return "你没选。但前面就是尽头。\n\n" + self._enter_boss_combat([], _skip_special=True)
+                return "你没选。走开了。\n\n'前进'继续。"
             try:
                 idx = int(inst) - 1
                 if 0 <= idx < len(enc["choices"]):
@@ -4389,6 +4403,9 @@ class DarkWorld:
         # 跳过
         if inst in ("跳过", "走", "离开"):
             self.current_special = None
+            # boss前特别遭遇跳过——还是要进boss
+            if getattr(self, '_boss_pending', False):
+                return "你走开了。但前面就是尽头。\n\n" + self._enter_boss_combat([], _skip_special=True)
             return "你走开了。\n\n'前进'继续。"
 
         return "选一个选项，或'跳过'。"
