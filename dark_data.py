@@ -1792,10 +1792,10 @@ FAKE_INFO = [
 
 def pick_room_type():
     weights = {
-        "empty": 5, "monster": 10, "treasure": 10, "trap": 7,
-        "echo": 10, "her": 6, "philosophy": 10, "censored": 8,
+        "empty": 15, "monster": 3, "treasure": 8, "trap": 4,
+        "echo": 10, "her": 8, "philosophy": 10, "censored": 5,
         "hidden": 3, "fountain": 5, "bridge": 6, "sage": 10,
-        "pause": 18, "broken": 14,
+        "pause": 22, "broken": 14,
         # 哲学房间——稀有，但每局至少遇到一两个
         "arendt": 4,     # 平庸之恶
         "rhizome": 3,    # 根茎
