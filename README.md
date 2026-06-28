@@ -331,6 +331,47 @@ R牌会随探索自然衰减。你越顺从R越懒得看你——全景监狱的
 
 ---
 
+## HTTP API
+
+`ciyuwu_server.py` 提供HTTP接口，让网页聊天AI也能玩。
+
+```bash
+pip install flask
+python ciyuwu_server.py
+# 默认 localhost:8877
+```
+
+### 接口
+
+| 路由 | 方法 | 请求体 | 返回 |
+|---|---|---|---|
+| `GET /` | — | — | 游戏说明 |
+| `POST /new` | `{"seed": 42}` (seed可选) | `{"text":"...","state":{...},"done":false}` |
+| `POST /cmd` | `{"cmd":"前进","state":{...}}` | `{"text":"...","state":{...},"done":false}` |
+
+每次请求带上次返回的state，服务端不存状态。任何能发HTTP请求的AI都能玩。
+
+### 示例
+
+```bash
+# 开局
+curl -X POST http://localhost:8877/new -H "Content-Type: application/json" -d '{"seed":42}'
+
+# 执行命令（用上次返回的state）
+curl -X POST http://localhost:8877/cmd -H "Content-Type: application/json" -d '{"cmd":"新角","state":{...}}'
+```
+
+### 给ChatGPT / ChatBox用
+
+在function calling或MCP tool里注册两个工具：
+
+- `ciyuwu_new` — 调 `POST /new`，返回state存着
+- `ciyuwu_cmd` — 调 `POST /cmd`，带上state + 指令字符串
+
+AI自己负责保存state、下次带回来。服务端无状态，天然多用户。
+
+---
+
 ## 函数调用接法
 
 `tool-schema.json` 定义了两个工具：
@@ -365,6 +406,7 @@ def handle_cmd(args):
 | `dark_engine.py` | 引擎核心。状态机、所有指令处理、房间生成 |
 | `dark_combat.py` | 战斗系统。攻击、防御、说话、敌人行为 |
 | `dark_data.py` | 游戏数据。词谱、怪物、Boss、房间、成就、任务。加内容只改这里 |
+| `ciyuwu_server.py` | HTTP API服务。Flask，让任何AI都能玩 |
 | `ciyuwu_blind.py` | 盲玩版。构建后生成 |
 | `build_blind.py` | 构建盲玩版 |
 | `tool-schema.json` | 函数调用schema |
