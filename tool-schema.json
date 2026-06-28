@@ -1,0 +1,25 @@
+{
+  "tools": [
+    {
+      "name": "ciyuwu_new_game",
+      "description": "开新局。可选指定种子保证可复现。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "seed": {"type": "integer", "description": "随机种子，不指定默认42"}
+        }
+      }
+    },
+    {
+      "name": "ciyuwu_cmd",
+      "description": "执行游戏指令。支持批量（前进5）和串联（前进;说 我在）。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "command": {"type": "string", "description": "游戏指令，如：新角、确认、前进、攻、说 痛、前进5、前进;说 我在"}
+        },
+        "required": ["command"]
+      }
+    }
+  ]
+}
