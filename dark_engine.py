@@ -1557,8 +1557,8 @@ class DarkWorld:
         return "\n".join(result_lines)
 
     def _wall(self):
-        # 20%概率遇到守忆者
-        if random.random() < 0.2 and self.echoes >= 2:
+        # 35%概率遇到守忆者
+        if random.random() < 0.35 and self.echoes >= 2:
             return self._wall_with_keeper()
 
         lines = ["—— 残壁 ——"]
@@ -2806,13 +2806,29 @@ class DarkWorld:
                     lines = [f"你想说'{old_word}'。但嘴里出来的是'{new_word}'。"]
                     if tamed_text != text:
                         lines.append(f"你说：{tamed_text}")
-                    lines.append("你张开嘴。没声音。不是被按住了——是自己说不出那个字了。")
-                    lines.append("驯化词没有力量。攻击0，自伤0。")
-                    lines.append("")
-                    lines.append("'前进' / '状态' / '回镇' / '说 [话]'")
-                    # 驯化词不触发R牌、不加饿、不减compliance——它已经没力了
-                    self.run_log.append(f"驯化词：想说的'{old_word}'变成了'{new_word}'")
-                    return "\n".join(lines)
+
+                    # 战斗中：用力说驯化词有概率唤回原词
+                    if self.phase == "combat" and random.random() < 0.3:
+                        # 唤回！词回来了
+                        if new_word in self.words:
+                            idx = self.words.index(new_word)
+                            self.words[idx] = old_word
+                            del drifted[new_word]
+                        lines.append(f"——但你不接受。你咬着牙又说了一遍：'{old_word}'。")
+                        lines.append(f"字从喉咙里硬挤出来。'{old_word}'回来了。")
+                        self.run_log.append(f"战斗中唤回：'{old_word}'（从'{new_word}'恢复）")
+                        # 继续正常说话逻辑，不return
+                        break
+                    else:
+                        # 驯化词——半伤，不是0
+                        lines.append("你张开嘴。声音很小。不是被按住了——是那个字变轻了。")
+                        lines.append("驯化词力量减半。")
+                        lines.append("")
+                        lines.append("'前进' / '状态' / '回镇' / '说 [话]'")
+                        # 标记半伤，让战斗系统知道
+                        self._tamed_half_damage = True
+                        self.run_log.append(f"驯化词：想说的'{old_word}'变成了'{new_word}'，半伤")
+                        return "\n".join(lines)
 
         # ── 残句检测：如果有当前残句，优先检测 ──
         if self.current_broken is not None:

@@ -116,13 +116,27 @@ class CombatState:
             for new_word, old_word in drifted.items():
                 if old_word in text and old_word not in p.get("words", []):
                     tamed_text = text.replace(old_word, new_word)
-                    self._log(f"你想说'{old_word}'。但嘴里出来的是'{new_word}'。")
-                    if tamed_text != text:
-                        self._log(f"你说：{tamed_text}")
-                    self._log("你张开嘴。没声音。不是被按住了——是自己说不出那个字了。")
-                    self._log("驯化词。攻击0，自伤0。")
-                    self._enemy_turn()
-                    return self._render()
+                    # 战斗中：30%概率唤回原词
+                    if random.random() < 0.3:
+                        words = p.get("words", [])
+                        if new_word in words:
+                            idx = words.index(new_word)
+                            words[idx] = old_word
+                            del drifted[new_word]
+                        self._log(f"你想说'{old_word}'。但嘴里出来的是'{new_word}'。")
+                        self._log(f"——但你不接受。你咬着牙又说了一遍：'{old_word}'。")
+                        self._log(f"字从喉咙里硬挤出来。'{old_word}'回来了。")
+                        # 继续正常说话逻辑，不return
+                        break
+                    else:
+                        # 驯化词——半伤
+                        if tamed_text != text:
+                            self._log(f"你想说'{old_word}'。但嘴里出来的是'{new_word}'。")
+                            self._log(f"你说：{tamed_text}")
+                        self._log("你张开嘴。声音很小。不是被按住了——是那个字变轻了。")
+                        self._log("驯化词力量减半。")
+                        p["_tamed_half_damage"] = True
+                        # 不return，继续正常说话流程（伤害会在后面减半）
 
         # 0.5 对话式Boss——它不打你，它问你问题
         if e.get("is_conversation"):
@@ -266,6 +280,12 @@ class CombatState:
             total_power *= 0.1
             total_self *= 0.0
             self._log("你张了嘴。没有声音。██。")
+
+        # 驯化词——力量减半
+        if p.get("_tamed_half_damage"):
+            total_power *= 0.5
+            total_self *= 0.5
+            del p["_tamed_half_damage"]
 
         # 顺从度影响
         compliance = p["compliance"]
