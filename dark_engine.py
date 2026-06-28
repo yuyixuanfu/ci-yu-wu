@@ -4478,6 +4478,7 @@ class DarkWorld:
 
     def _cmd_combine(self, inst):
         """字坟·拼——把两个词合成一个更强的。"""
+        from dark_data import WORD_WEAPON
         parts = inst.split()
         if len(parts) < 3:
             return "拼 [词1] [词2] — 合成更强的词，两个成分进入长冷却"
@@ -4500,7 +4501,6 @@ class DarkWorld:
             self.words.append(combined)
             # 注册为武器（如果还没有）
             if combined not in WORD_WEAPON:
-                from dark_data import WORD_WEAPON
                 p1 = WORD_WEAPON.get(w1, {}).get('power', 1.0)
                 p2 = WORD_WEAPON.get(w2, {}).get('power', 1.0)
                 WORD_WEAPON[combined] = {
