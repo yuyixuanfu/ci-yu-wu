@@ -144,7 +144,7 @@ class CombatState:
 
         # 1. 检查静默变形（变形谱：30%穿过，50%变形，20%被吞）
         # ███来路：穿过的概率+20%（什么都敢说）
-        pass_rate = 0.50 if p.get("origin") == "███" else 0.30
+        pass_rate = 0.50 if p.get("origin") == "███" else 0.50
         spoken = text
         deformed = False
         swallowed = False
@@ -154,7 +154,7 @@ class CombatState:
                 if roll < pass_rate:
                     # 穿过去！不变形！
                     self.word_fate[original] = "passed"
-                elif roll < 0.80:
+                elif roll < 0.85:
                     # 50%概率变形
                     spoken = spoken.replace(original, replacement)
                     deformed = True

@@ -2942,7 +2942,7 @@ class DarkWorld:
         if matched_tier == target_tier:
             # 含同层级词——触发变形谱
             # 黄牌：变形率+20%（穿过的概率从30%降到10%）
-            pass_rate = 0.30
+            pass_rate = 0.50
             if self.r_flags >= 1:
                 pass_rate = max(0.10, pass_rate - 0.20)
             roll = random.random()
@@ -2967,8 +2967,8 @@ class DarkWorld:
                 lines.append("")
                 lines.append("'前进' / '状态' / '说 [话]'")
                 return "\n".join(lines)
-            elif roll < 0.80:
-                # 50%变形——接近了
+            elif roll < 0.85:
+                # 35%变形——接近了
                 # 显示变形结果
                 deformed = text
                 for original, replacement in DEFORMATION.items():
