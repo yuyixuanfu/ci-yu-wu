@@ -313,14 +313,36 @@ def cmd_game():
         for k, v in session_meta.items():
             if v is None:
                 continue
-            if k in ('killed_bosses', 'unlocked_origins', 'unlocked_achievements', 'wall_writings'):
-                # 列表/集合字段：合并去重
-                existing = set(disk_meta.get(k, []) or [])
-                new_vals = set(v) if isinstance(v, list) else {v}
-                disk_meta[k] = list(existing | new_vals)
+            if k in ('killed_bosses', 'unlocked_origins', 'unlocked_achievements',
+                      'wall_writings', 'heart_slots', 'game_diary'):
+                # 列表字段：合并去重
+                existing = set(str(x) for x in (disk_meta.get(k, []) or []))
+                merged = [x for x in (disk_meta.get(k, []) or [])]
+                for item in (v if isinstance(v, list) else [v]):
+                    if str(item) not in existing:
+                        merged.append(item)
+                        existing.add(str(item))
+                disk_meta[k] = merged
             elif k in ('echoes', 'runs', 'total_wait', 'cross_deform_count', 'cross_swallow_count'):
                 # 计数器：取最大值
                 disk_meta[k] = max(disk_meta.get(k, 0) or 0, v)
+            elif k in ('echo_map', 'cross_word_stats'):
+                # dict字段：按键合并
+                existing = disk_meta.get(k, {}) or {}
+                if isinstance(v, dict):
+                    for dk, dv in v.items():
+                        if dk not in existing:
+                            existing[dk] = dv
+                        elif isinstance(dv, list) and isinstance(existing[dk], list):
+                            # 列表值：合并去重
+                            seen = set(str(x) for x in existing[dk])
+                            for item in dv:
+                                if str(item) not in seen:
+                                    existing[dk].append(item)
+                                    seen.add(str(item))
+                        else:
+                            existing[dk] = dv
+                disk_meta[k] = existing
             else:
                 disk_meta[k] = v
         _save_meta(disk_meta)
