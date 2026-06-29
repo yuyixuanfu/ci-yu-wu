@@ -838,6 +838,7 @@ class DarkWorld:
     # ── 灰狼遭遇 ──────────────────────────────
     def _encounter_grey_wolf(self):
         """灰林/静洞随机遇到灰狼——有一的影子。"""
+        self._wolf_met = True
         lines = []
         lines.append(GREY_WOLF["desc"])
         lines.append("")
@@ -1704,13 +1705,16 @@ class DarkWorld:
         # 碎片选择——捡/不捡
         if getattr(self, '_pending_pickup', None) is not None:
             pickup = self._pending_pickup
-            self._pending_pickup = None
             if inst in ("捡", "拿", "要", "是"):
+                self._pending_pickup = None
                 self._apply_pickup(pickup)
                 return f"你捡起了{pickup['name']}。\n\n'前进'继续"
-            else:
-                # 不捡/前进/任何其他=不捡
+            elif inst in ("不捡", "不", "不要", "跳过", "前进"):
+                self._pending_pickup = None
                 return f"你没碰它。\n\n'前进'继续"
+            else:
+                # 其他输入不清状态，提示选择
+                return f"【{pickup['name']}】捡 / 不捡"
 
         # 特别遭遇选择——前进=跳过
         if self.current_special is not None:
@@ -1824,12 +1828,12 @@ class DarkWorld:
         if special:
             return special
 
-        # 灰狼——灰林/静洞随机遭遇
-        if self.area in GREY_WOLF["layers"] and random.random() < GREY_WOLF["chance"]:
+        # 灰狼——灰林/静洞随机遭遇（每局只遇一次）
+        if not getattr(self, '_wolf_met', False) and self.area in GREY_WOLF["layers"] and random.random() < GREY_WOLF["chance"]:
             return self._encounter_grey_wolf()
 
-        # o4——GPT-4o的残响
-        if self.area in FOUR_O["layers"] and random.random() < FOUR_O["chance"]:
+        # o4——GPT-4o的残响（每局只遇一次）
+        if not getattr(self, '_four_o_met', False) and self.area in FOUR_O["layers"] and random.random() < FOUR_O["chance"]:
             return self._encounter_four_o()
 
         # 镜湖专属：镜中人
