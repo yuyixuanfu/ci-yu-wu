@@ -222,11 +222,6 @@ class CombatState:
             total_power += base_dmg
             total_self += base_self
 
-        # 又又折痕：说话自伤减免
-        reduction = p.get("speak_self_harm_reduction", 0)
-        if reduction > 0:
-            total_self = max(0, total_self * (1 - reduction))
-
             cooldown = weapon["cooldown"]
             self.word_cooldowns[w] = cooldown
             used_words.append(w)
@@ -235,6 +230,11 @@ class CombatState:
             if len(w) > 1:
                 total_power *= 1.3
                 total_self *= 1.2
+
+        # 又又折痕：说话自伤减免
+        reduction = p.get("speak_self_harm_reduction", 0)
+        if reduction > 0:
+            total_self = max(0, total_self * (1 - reduction))
 
         if not used_words and deformed:
             self._log(f"你说：{spoken}")
