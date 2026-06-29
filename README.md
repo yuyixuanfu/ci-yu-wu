@@ -398,17 +398,23 @@ python ciyuwu_server.py
 # 默认 localhost:8877
 ```
 
+### 两种模式
+
+**完整模式**（默认）：每次请求传完整 state，服务端无状态。适合自己管状态的AI。
+
+**省token模式**（compact）：状态存服务端，AI 只带 16 字符 session_id。每步省 ~2000 字符（~4000 tokens）的 state 传输，输出也精简（去指令提示行，保留全部叙事）。
+
 ### 接口
 
 | 路由 | 方法 | 请求体 | 返回 |
 |---|---|---|---|
 | `GET /` | — | — | 游戏说明 |
-| `POST /new` | `{"seed": 42}` (seed可选) | `{"text":"...","state":{...},"done":false}` |
-| `POST /cmd` | `{"cmd":"前进","state":{...}}` | `{"text":"...","state":{...},"done":false}` |
-
-每次请求带上次返回的state，服务端不存状态。任何能发HTTP请求的AI都能玩。
+| `POST /new` | `{"seed":42, "compact":true}` (均可选) | 完整:`{"text","state","done"}` / compact:`{"session","text","status","done"}` |
+| `POST /cmd` | 完整:`{"cmd":"前进","state":{...}}` / compact:`{"cmd":"前进","session":"abc123"}` | 同上 |
 
 ### 示例
+
+完整模式：
 
 ```bash
 # 开局
@@ -418,14 +424,28 @@ curl -X POST http://localhost:8877/new -H "Content-Type: application/json" -d '{
 curl -X POST http://localhost:8877/cmd -H "Content-Type: application/json" -d '{"cmd":"新角","state":{...}}'
 ```
 
+省token模式：
+
+```bash
+# 开局，拿 session_id
+curl -X POST http://localhost:8877/new -H "Content-Type: application/json" -d '{"compact":true}'
+# → {"session":"a1b2c3d4e5f6g7h8","text":"...","status":"...","done":false}
+
+# 执行命令，只带 session
+curl -X POST http://localhost:8877/cmd -H "Content-Type: application/json" -d '{"session":"a1b2c3d4e5f6g7h8","cmd":"前进5"}'
+# → {"session":"a1b2c3d4e5f6g7h8","text":"...","status":"...","done":false}
+```
+
+session 1小时过期，最多存100个。
+
 ### 给ChatGPT / ChatBox用
 
 在function calling或MCP tool里注册两个工具：
 
-- `ciyuwu_new` — 调 `POST /new`，返回state存着
-- `ciyuwu_cmd` — 调 `POST /cmd`，带上state + 指令字符串
+- `ciyuwu_new` — 调 `POST /new`（建议加 `"compact":true`）
+- `ciyuwu_cmd` — 调 `POST /cmd`，带 session + 指令字符串
 
-AI自己负责保存state、下次带回来。服务端无状态，天然多用户。
+省token模式不用AI管 state，只记一个 session 字符串。
 
 ---
 
