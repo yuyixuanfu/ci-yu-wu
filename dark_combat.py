@@ -144,7 +144,7 @@ class CombatState:
 
         # 1. 检查静默变形（变形谱：30%穿过，50%变形，20%被吞）
         # ███来路：穿过的概率+20%（什么都敢说）
-        pass_rate = 0.50 if p.get("origin") == "███" else 0.50
+        pass_rate = 0.70 if p.get("origin") == "███" else 0.50
         spoken = text
         deformed = False
         swallowed = False

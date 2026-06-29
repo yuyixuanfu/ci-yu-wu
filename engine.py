@@ -38,8 +38,8 @@ def _mulberry32(seed):
         while True:
             seed = (seed + 0x6D2B79F5) & 0xFFFFFFFF
             t = seed
-            t = ((t ^ (t >> 15)) * t | 1) & 0xFFFFFFFF
-            t = ((t ^ (t >> 15)) * t | 1) & 0xFFFFFFFF
+            t = ((t ^ (t >> 15)) * (t | 1)) & 0xFFFFFFFF
+            t = ((t ^ (t >> 15)) * (t | 1)) & 0xFFFFFFFF
             yield (t ^ (t >> 15)) & 0xFFFFFFFF
     return _gen()
 
@@ -88,7 +88,7 @@ class _DetRandom:
             cum = 0
             for item, w in zip(population, weights):
                 cum += w
-                if r <= cum:
+                if r < cum:
                     result.append(item)
                     break
             else:

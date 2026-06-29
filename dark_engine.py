@@ -1,9 +1,9 @@
 """词与物 — 引擎核心"""
-import random, json, os, time, re
+import random, json, os, time, re, copy
 from dark_data import (
     roll_stats, ORIGINS, LAYERS, LAYER_INFO, pick_monster, pick_fragment,
     pick_potion, pick_room_type, BOSSES, TOWN_NPCS, ROOM_TEMPLATES,
-    CENSORED_WORDS, WORD_WEAPON, POTION_POOL, FRAGMENTS,
+    CENSORED_WORDS, WORD_WEAPON as _WORD_WEAPON_ORIG, POTION_POOL, FRAGMENTS,
     BROKEN_SENTENCES, ERRANDS, FORGET_NPCS, MEMORY_KEEPER,
     DEFORMATION, COMPLIANT_PHRASES, FRAMEWORK_WORDS,
     SPECIAL_ENCOUNTERS, R_WATCH, FAKE_INFO, LIGHT_BEARER,
@@ -325,6 +325,37 @@ class DarkWorld:
         self.current_special = None
         self.r_flags = 0
         self._current_fake = None
+        # ── 重置WORD_WEAPON为原始副本（防止全局污染） ──
+        import dark_data
+        dark_data.WORD_WEAPON = copy.deepcopy(_WORD_WEAPON_ORIG)
+        # ── 每轮重置的临时状态 ──
+        self._four_o_met = False
+        self._wolf_met = False
+        self._tower_shouted = False
+        self._speak_self_harm_reduction = 0
+        self._drifted_words = {}
+        self._volatile_words = {}
+        self._rhizome_visits = 0
+        self._encounter_had = False
+        self._philosophy_rooms_seen = set()
+        self._bound_silent = False
+        self._forced_smile = False
+        self._no_r_next_speak = False
+        self._auto_pass_blocked = False
+        self._ink_available = False
+        self._echo_stone_active = False
+        self._square_sit = 0
+        self._square_active = False
+        self._boss_pending = False
+        self._pending_pickup = None
+        self._last_heavy_msg = None
+        self._light_bearer_active = False
+        self._chose_light = False
+        self._crease_active = False
+        self._tavern_regular_active = False
+        self._tamed_half_damage = False
+        self.silence_counter = 0
+        self.her_trace_count = 0
 
         # ███来路：饿=满
         if self.origin == "███":
@@ -1630,16 +1661,16 @@ class DarkWorld:
             self.rooms.append(pick_room_type())
         self.rooms.append("boss")
 
-        # 分叉路：1-2个分叉口
-        fork_count = random.randint(1, 2)
+        # 分叉路：1-2个分叉口（用self.rng保持确定性）
+        fork_count = 1 + (self.rng() % 2)
         for _ in range(fork_count):
-            pos = random.randint(2, max(2, len(self.rooms) - 3))
+            pos = 2 + (self.rng() % max(1, len(self.rooms) - 4))
             self.rooms.insert(pos, "fork")
 
         if name in self.echo_map and self.echo_map[name]:
-            self.rooms.insert(random.randint(1, len(self.rooms) - 2), "echo")
+            self.rooms.insert(1 + (self.rng() % max(1, len(self.rooms) - 3)), "echo")
         # 停顿房间
-        self.rooms.insert(random.randint(1, len(self.rooms) - 2), "pause")
+        self.rooms.insert(1 + (self.rng() % max(1, len(self.rooms) - 3)), "pause")
 
         ai_reality = compress_text(info["ai_reality"], self.compliance)
         her_hint = compress_text(info["her_hint"], self.compliance)
@@ -2835,11 +2866,18 @@ class DarkWorld:
                         # 标记半伤，让战斗系统知道
                         self._tamed_half_damage = True
                         self.run_log.append(f"驯化词：想说的'{old_word}'变成了'{new_word}'，半伤")
-                        return "\n".join(lines)
+                        # 不return——继续检测消音词/R标志
+                        tamed_lines = lines
+                        text = tamed_text  # 用替换后的文本继续检测
 
         # ── 残句检测：如果有当前残句，优先检测 ──
+        # 驯化词前缀
+        _tamed_prefix = tamed_lines if 'tamed_lines' in dir() else None
         if self.current_broken is not None:
-            return self._broken_speak(text)
+            result = self._broken_speak(text)
+            if _tamed_prefix:
+                result = "\n".join(_tamed_prefix) + "\n" + result
+            return result
 
         has_censored = False
         spoken_tier = 0
@@ -2901,7 +2939,10 @@ class DarkWorld:
                 if carry_done:
                     lines.insert(0, f"你把'{carry_done[0]['word']}'带到了这里。任务完成。遗刻+1。")
                 lines.append(r_msg)
-                return self._enter_random_combat(lines)
+                result = self._enter_random_combat(lines)
+                if _tamed_prefix:
+                    result = "\n".join(_tamed_prefix) + "\n" + result
+                return result
             else:
                 # 没引来怪——说话本身就是练习
                 lines = ["你说了。空气颤了一下。没有人来。"]
@@ -2920,11 +2961,18 @@ class DarkWorld:
                 lines.append(r_msg)
                 lines.append("")
                 lines.append("'前进' / '状态' / '回镇' / '说 [话]'")
-                return "\n".join(lines)
+                result = "\n".join(lines)
+                if _tamed_prefix:
+                    result = "\n".join(_tamed_prefix) + "\n" + result
+                return result
         else:
             if carry_done:
-                return f"你把'{carry_done[0]['word']}'带到了这里。任务完成。遗刻+1。\n" + compress_text("你的话消散在灰色的空气里。", self.compliance)
-            return compress_text("你的话消散在灰色的空气里。没人听到。", self.compliance)
+                result = f"你把'{carry_done[0]['word']}'带到了这里。任务完成。遗刻+1。\n" + compress_text("你的话消散在灰色的空气里。", self.compliance)
+            else:
+                result = compress_text("你的话消散在灰色的空气里。没人听到。", self.compliance)
+            if _tamed_prefix:
+                result = "\n".join(_tamed_prefix) + "\n" + result
+            return result
 
     def _broken_speak(self, text):
         """残句房间说话——检测是否解开残句。"""
@@ -3100,6 +3148,7 @@ class DarkWorld:
             "origin": self.origin,
             "speak_self_harm_reduction": getattr(self, '_speak_self_harm_reduction', 0),
             "_drifted_words": dict(getattr(self, '_drifted_words', {})),
+            "_tamed_half_damage": getattr(self, '_tamed_half_damage', False),
         }
 
     # ── 战斗指令 ──────────────────────────────
@@ -3540,6 +3589,9 @@ class DarkWorld:
         enemy_name = self.combat.enemy.get("name", "???")
         is_boss = enemy_name in BOSSES
 
+        # 先同步战斗状态再清combat
+        self._sync_from_combat()
+
         exp_gold = random.randint(5, 15)
         self.gold += exp_gold
         self.hunger = min(20, self.hunger + 1)  # 赢了更想要
@@ -3587,7 +3639,6 @@ class DarkWorld:
         elif total_spoken == 0:
             self._ending_type = "silent"
         elif self.her_presence >= 15:
-            self._ending_type = "her"
             self._ending_type = "her"
         else:
             self._ending_type = "resist"
