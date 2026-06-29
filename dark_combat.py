@@ -924,10 +924,10 @@ class CombatState:
     def is_over(self):
         if self.player["hp"] <= 0:
             return "dead"
-        if self.enemy["hp"] <= 0:
-            return "win"
         if self.enemy["hp"] <= -900:
             return "fled"
+        if self.enemy["hp"] <= 0:
+            return "win"
         return None
 
     def _render(self):

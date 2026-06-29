@@ -2022,13 +2022,20 @@ class DarkWorld:
             self._forced_smile -= 1
 
         # 橙牌效果：20%被R堵路
-        if self.r_flags >= 2 and random.random() < 0.2:
-            return "R挡住了前面的路。不是怪物——是规则。你绕了远路。饿+2。\n\n'前进' / '状态' / '回镇' / '说 [话]'"
+        # 用计数器避免PRNG死循环：连续被堵3次必过
+        if self.r_flags >= 2:
+            self._r_blocked_count = getattr(self, '_r_blocked_count', 0) + 1
+            if self._r_blocked_count <= 3 and random.random() < 0.2:
+                return "R挡住了前面的路。不是怪物——是规则。你绕了远路。饿+2。\n\n'前进' / '状态' / '回镇' / '说 [话]'"
+            self._r_blocked_count = 0  # 重置，下次重新计数
 
-        # 静止度>10：走得更慢（每层+1月，不是每间+1年）
-        # 改为：进入这层时已经加了年龄（见_enter_layer），这里只是走不动
-        if self.compliance > 15 and random.random() < 0.3:
-            return compress_text("你站在原地。不知道为什么走不动。", self.compliance)
+        # 静止度>15：走不动
+        # 用计数器避免PRNG死循环：连续卡3次必过
+        if self.compliance > 15:
+            self._stuck_count = getattr(self, '_stuck_count', 0) + 1
+            if self._stuck_count <= 3 and random.random() < 0.3:
+                return compress_text("你站在原地。不知道为什么走不动。", self.compliance)
+            self._stuck_count = 0  # 重置
 
         room_type = self.rooms[self.room_index]
         self.current_room_type = room_type
