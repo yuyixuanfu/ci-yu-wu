@@ -43,6 +43,41 @@ _sessions = {}  # session_id -> (state, last_access_time)
 _SESSION_MAX = 100  # 最多存100个session
 _SESSION_TTL = 3600  # 1小时过期
 
+# ── 跨session meta持久化 ──
+_META_FILE = os.path.join(_HERE, "ciyuwu_meta.json")
+_META_KEYS = ["echoes", "runs", "echo_map", "killed_bosses",
+              "unlocked_origins", "wall_writings", "total_wait",
+              "unlocked_achievements", "heart_slots"]
+
+def _load_meta():
+    """从磁盘读meta进度。"""
+    if not os.path.exists(_META_FILE):
+        return {}
+    try:
+        with open(_META_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def _save_meta(meta):
+    """把meta进度写到磁盘。"""
+    try:
+        with open(_META_FILE, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+def _extract_meta(state):
+    """从state里提取meta字段。"""
+    return {k: state.get(k) for k in _META_KEYS if k in state}
+
+def _inject_meta(state, meta):
+    """把meta字段注入state。"""
+    for k in _META_KEYS:
+        if k in meta:
+            state[k] = meta[k]
+    return state
+
 
 def _init():
     global _initialized
@@ -123,7 +158,14 @@ def new_game():
 
     with _lock:
         _cleanup_sessions()
+        # 先保存当前所有session的meta
+        for sid, (s, _) in _sessions.items():
+            _save_meta(_extract_meta(s))
         state, text = _new_game(seed=seed)
+        # 注入持久化的meta（echoes/killed_bosses等不因/new重置）
+        meta = _load_meta()
+        if meta:
+            state = _inject_meta(state, meta)
 
     if compact:
         # 服务端存状态，返回session_id
@@ -173,6 +215,9 @@ def cmd_game():
             return jsonify({"error": "缺少 session 或 state 字段"}), 400
 
         new_state, output = _cmd(state, instruction)
+
+        # 持久化meta进度
+        _save_meta(_extract_meta(new_state))
 
         if compact:
             # 存回服务端

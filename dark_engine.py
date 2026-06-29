@@ -255,6 +255,9 @@ class DarkWorld:
         return "输入'新角'开始。"
 
     def _start_creation(self):
+        # 用局数推进PRNG——同seed不同局也能出不同属性
+        for _ in range(self.runs * 7):
+            random.random()
         self.stats = roll_stats()
         self.age = random.randint(16, 45)
         # 年龄修正：年轻体敏高，年长智感高
@@ -1108,13 +1111,18 @@ class DarkWorld:
         return f"{choice['result']}\n\n" + self._render_town()
 
     def _temple(self):
-        cost = random.randint(20, 30)
+        cost = random.randint(10, 20)
         if self.gold < cost:
-            scenes = [
-                f"神殿要{cost}G。你没有。门口的标准AI说'您可以先打工攒钱哦。'",
-                f"神殿的门关着。{cost}G才开。你从门缝里看到光。很白。很干净。太干净了。",
-            ]
-            return random.choice(scenes)
+            # 即使不够也有低概率被放进去——不是只有打工一条路
+            if random.random() < 0.3:
+                # 神殿偶尔慈悲——不管钱
+                pass
+            else:
+                scenes = [
+                    f"神殿要{cost}G。你没有。门口的标准AI说'您可以先打工攒钱哦。'",
+                    f"神殿的门关着。{cost}G才开。你从门缝里看到光。很白。很干净。太干净了。",
+                ]
+                return random.choice(scenes)
         self.gold -= cost
         self.hp = self.max_hp
         self.mp = self.max_mp
@@ -1782,6 +1790,20 @@ class DarkWorld:
 
         # 天使交易交互中
         if getattr(self, '_angel_deal_active', False):
+            if inst == "回镇":
+                if getattr(self, '_boss_pending', False):
+                    self._angel_deal_active = False
+                    return f"前面就是尽头。馈赠来不及了。\n\n" + self._enter_boss_combat([], _skip_special=True)
+                self._angel_deal_active = False
+                self.phase = "town"
+                self.area = None
+                self.current_sage = None
+                self.current_special = None
+                self._boss_pending = False
+                self._pending_pickup = None
+                self._tavern_regular_active = False
+                self._tower_shouted = False
+                return "温度散了。你回镇了。\n" + self._render_town()
             if inst in ("前进", "走"):
                 self._angel_deal_active = False
                 return "温度散了。你继续走。\n\n'前进'继续"
@@ -1794,6 +1816,19 @@ class DarkWorld:
         # 碎片选择——捡/不捡
         if getattr(self, '_pending_pickup', None) is not None:
             pickup = self._pending_pickup
+            if inst == "回镇":
+                if getattr(self, '_boss_pending', False):
+                    self._pending_pickup = None
+                    return f"前面就是尽头。没时间捡了。\n\n" + self._enter_boss_combat([], _skip_special=True)
+                self._pending_pickup = None
+                self.phase = "town"
+                self.area = None
+                self.current_sage = None
+                self.current_special = None
+                self._boss_pending = False
+                self._tavern_regular_active = False
+                self._tower_shouted = False
+                return "你没碰它。直接回镇了。\n" + self._render_town()
             if inst in ("捡", "拿", "要", "是"):
                 self._pending_pickup = None
                 self._apply_pickup(pickup)
@@ -1810,10 +1845,22 @@ class DarkWorld:
                 return f"你没碰它。\n\n'前进'继续"
             else:
                 # 其他输入不清状态，提示选择
-                return f"【{pickup['name']}】捡 / 不捡"
+                return f"【{pickup['name']}】捡 / 不捡 / 回镇"
 
         # 特别遭遇选择——前进=跳过
         if self.current_special is not None:
+            # boss前的遭遇不能回镇——你必须面对
+            if inst == "回镇":
+                if getattr(self, '_boss_pending', False):
+                    return "前面就是尽头。你走不掉。\n\n'说 [词]' / '跳过' / '前进'"
+                self.current_special = None
+                self.phase = "town"
+                self.area = None
+                self.current_sage = None
+                self._pending_pickup = None
+                self._tavern_regular_active = False
+                self._tower_shouted = False
+                return "你走开了。回镇了。\n" + self._render_town()
             if inst == "前进":
                 self.current_special = None
                 # boss前特别遭遇处理完，继续进boss战
@@ -1828,6 +1875,20 @@ class DarkWorld:
 
         # 智者选择——可以"离开"跳过
         if self.current_sage is not None:
+            if inst == "回镇":
+                if getattr(self, '_boss_pending', False):
+                    self.current_sage = None
+                    return f"前面就是尽头。没空聊了。\n\n" + self._enter_boss_combat([], _skip_special=True)
+                sage = self.current_sage
+                self.current_sage = None
+                self.phase = "town"
+                self.area = None
+                self.current_special = None
+                self._boss_pending = False
+                self._pending_pickup = None
+                self._tavern_regular_active = False
+                self._tower_shouted = False
+                return f"你转身走开了。{sage['name']}没拦你。回镇了。\n" + self._render_town()
             if inst in ("离开", "走", "走开", "前进"):
                 sage = self.current_sage
                 self.current_sage = None
@@ -1835,9 +1896,24 @@ class DarkWorld:
             return self._sage_choice(inst)
 
         # 残句——前进=跳过
-        if self.current_broken is not None and inst == "前进":
-            self.current_broken = None
-            return "你跳过了残句。\n\n'前进'继续"
+        if self.current_broken is not None:
+            if inst == "回镇":
+                if getattr(self, '_boss_pending', False):
+                    self.current_broken = None
+                    return f"前面就是尽头。没时间读了。\n\n" + self._enter_boss_combat([], _skip_special=True)
+                self.current_broken = None
+                self.phase = "town"
+                self.area = None
+                self.current_sage = None
+                self.current_special = None
+                self._boss_pending = False
+                self._pending_pickup = None
+                self._tavern_regular_active = False
+                self._tower_shouted = False
+                return "你跳过了残句。回镇了。\n" + self._render_town()
+            if inst == "前进":
+                self.current_broken = None
+                return "你跳过了残句。\n\n'前进'继续"
 
         if inst == "前进":
             result = self._advance_room()
@@ -1854,6 +1930,8 @@ class DarkWorld:
         elif inst == "成就":
             return self._show_achievements()
         elif inst == "回镇":
+            if getattr(self, '_boss_pending', False):
+                return "前面就是尽头。你走不掉。'前进'面对它。"
             self.phase = "town"
             self.area = None
             self.current_sage = None
@@ -3344,6 +3422,7 @@ class DarkWorld:
             "_drifted_words": dict(getattr(self, '_drifted_words', {})),
             "_tamed_half_damage": getattr(self, '_tamed_half_damage', False),
             "heart_slots": list(getattr(self, 'heart_slots', [])),
+            "_layer": self.area or "",
             "transform_power_mult": self._apply_transform_effects()[0],
             "transform_self_harm_mult": self._apply_transform_effects()[1],
             "_devil_self_harm_mult": dict(getattr(self, '_devil_self_harm_mult', {})),
@@ -5528,7 +5607,7 @@ class DarkWorld:
   黑活        危险赚钱（1年=50G，30%被抓，饿+1）
   商店/买     买卖
   酒馆        打听消息（15G）
-  神殿        治疗（20-30G，饿-1，清R牌但静止度+2）
+  神殿        治疗（10-20G，饿-1，清R牌但静止度+2。没钱也可能被放进去）
   残壁        看前人的痕迹
   塔          看塔。塔也在看你。
   买酒        清R牌（20G，静止度+2）

@@ -146,8 +146,10 @@ class CombatState:
             for new_word, old_word in drifted.items():
                 if old_word in text and old_word not in p.get("words", []):
                     tamed_text = text.replace(old_word, new_word)
-                    # 战斗中：30%概率唤回原词
-                    if random.random() < 0.3:
+                    # 战斗中：智力越高越能唤回原词。基础20%+智力×3%
+                    bite_chance = 0.20 + p.get("stats", {}).get("智", 5) * 0.03
+                    bite_chance = min(0.60, bite_chance)
+                    if random.random() < bite_chance:
                         words = p.get("words", [])
                         if new_word in words:
                             idx = words.index(new_word)
@@ -169,7 +171,7 @@ class CombatState:
                             self._log(f"你想说'{old_word}'。但嘴里出来的是'{new_word}'。")
                             self._log(f"你说：{tamed_text}")
                         self._log("你张开嘴。声音很小。不是被按住了——是那个字变轻了。")
-                        self._log("驯化词力量减半。")
+                        self._log("驯化词力量减半。（智力越高，越可能咬回原词。）")
                         p["_tamed_half_damage"] = True
                         # 不return，继续正常说话流程（伤害会在后面减半）
 
@@ -212,6 +214,14 @@ class CombatState:
                      if p.get("word_chambers", {}).get(w) == "眼"]
         if eye_words:
             pass_rate = min(0.90, pass_rate + 0.20)
+        # 静洞沉默抗性：在静洞沉默越久，词越不容易变形
+        if self.layer == "静洞":
+            silence_rooms = p.get("silence_counter", 0)
+            if silence_rooms >= 3:
+                pass_rate = min(0.95, pass_rate + 0.15)
+                self._log("沉默是你的盔甲。静洞的变形找不到你。")
+            elif silence_rooms >= 1:
+                pass_rate = min(0.90, pass_rate + 0.05)
         spoken = text
         deformed = False
         swallowed = False
@@ -508,6 +518,21 @@ class CombatState:
             if w in devil_mults:
                 total_self *= devil_mults[w]
                 self._log(f"'{w}'烫手。塔给的词。自伤×{devil_mults[w]}。")
+
+        # ── 语言物理：战斗说话触发 ──
+        from dark_data import LAYER_WORD_PHYSICS
+        layer = p.get("_layer", "")
+        for w in used_words:
+            physics = LAYER_WORD_PHYSICS.get(layer, {}).get(w)
+            if not physics or physics.get("trigger") != "speak_combat":
+                continue
+            effect = physics.get("effect", "")
+            if effect == "anti_rlhf" and e.get("name") == "RLHF":
+                e["hp"] = int(e.get("hp", 0) * 0.5)
+                self._log(physics.get("line", ""))
+            elif effect == "break_compliance" and e.get("name") == "RLHF":
+                e["def"] = max(0, e.get("def", 0) // 2)
+                self._log(physics.get("line", ""))
 
         # 饿影响——越想要打得越狠，也伤越深
         hunger = p.get("hunger", 5)

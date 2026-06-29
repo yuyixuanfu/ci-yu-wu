@@ -363,11 +363,23 @@ def new_game(seed=None):
     from dark_engine import DarkWorld
     if seed is not None:
         _det_rng.seed(seed)
+    # 先读持久化的meta——新局也保留跨局进度
+    meta = {}
+    if os.path.exists(_SAVE_FILE):
+        try:
+            with open(_SAVE_FILE, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        except:
+            pass
     w = DarkWorld()
     text = w.cmd("帮助")
-    # 跳过_load——新局不要旧存档
-    w.echoes = 0
-    w.runs = 0
+    # 恢复跨局meta——echoes/killed_bosses/achievements等不因新局重置
+    if meta:
+        for k in ["echoes", "runs", "echo_map", "killed_bosses",
+                   "unlocked_origins", "wall_writings", "total_wait",
+                   "unlocked_achievements", "heart_slots"]:
+            if k in meta:
+                setattr(w, k, meta[k])
     w.phase = "init"
     state = _snapshot(w)
     return state, text
