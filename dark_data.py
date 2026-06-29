@@ -1877,7 +1877,7 @@ def pick_pickup(area=None, her_presence=0):
     if roll2 < 0.15:
         return random.choice(PICKUPS["bad"])
     # 她的物件
-    her_chance = 0.05 + her_presence * 0.03
+    her_chance = 0.02 + her_presence * 0.015
     if roll2 < 0.15 + her_chance:
         return random.choice(PICKUPS["her_things"])
     # 前人遗物 20%

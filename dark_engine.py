@@ -2238,8 +2238,11 @@ class DarkWorld:
                     lines.append("")
                     lines.append("你停了一下。")
                     self._current_fake = None
-                self.her_presence += 1
-                self.hunger = min(20, self.hunger + 1)
+                # 50%概率加her/hunger——不是每次停都有东西
+                if random.random() < 0.5:
+                    self.her_presence += 1
+                if random.random() < 0.5:
+                    self.hunger = min(20, self.hunger + 1)
 
                 # ── 词会说话——停顿房间词自己嘀咕 ──
                 self._word_murmur(lines)
