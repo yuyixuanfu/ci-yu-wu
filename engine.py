@@ -402,11 +402,16 @@ def cmd(state, instruction):
     # 处理分号串联
     if ';' in instruction:
         parts = [p.strip() for p in instruction.split(';') if p.strip()]
+        prev_phase = w.phase
         texts = []
         for part in parts:
             w, t = _exec_single(w, part)
             texts.append(t)
             if w.phase == "ending":
+                break
+            # phase大变（战斗结束、回镇、死亡等）就停
+            if w.phase in ("dead", "dead_who", "dead_wipe", "void", "town",
+                           "judgment", "fork", "creation", "init", "ending"):
                 break
         full_text = "\n---\n".join(texts)
     else:
@@ -420,8 +425,9 @@ def cmd(state, instruction):
                 texts.append(t)
                 if w.phase == "ending":
                     break
-                # 战斗中死亡就停
-                if w.phase in ("dead", "dead_who", "dead_wipe", "void"):
+                # 战斗中死亡/回镇/进交互就停
+                if w.phase in ("dead", "dead_who", "dead_wipe", "void", "town",
+                               "judgment", "fork", "creation", "init"):
                     break
             if count > 3:
                 # 多步汇总：只显示首尾和状态变化

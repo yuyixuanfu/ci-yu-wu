@@ -3178,13 +3178,10 @@ class DarkWorld:
             penalty = R_WATCH["tier_penalty"].get(spoken_tier, 1)
             self.r_flags += penalty
             if self.r_flags >= 3:
-                # 红牌——直接消失
-                self.phase = "dead"
-                self.combat = None
-                self._r_caught = True  # 标记：R抓的，不留墙
+                # 红牌——走_handle_death，但标记R抓的不留墙
+                self._r_caught = True  # 标记：R抓的，_handle_death里会检查
                 self._check_errand_witness("red_card")  # 见证：红牌
-                self._save_meta()
-                return R_WATCH["red"]
+                return self._handle_death()
             elif self.r_flags == 2:
                 self._r_caught = False
 
@@ -3420,12 +3417,15 @@ class DarkWorld:
             "origin": self.origin,
             "speak_self_harm_reduction": getattr(self, '_speak_self_harm_reduction', 0),
             "_drifted_words": dict(getattr(self, '_drifted_words', {})),
+            "_self_drifted_words": dict(getattr(self, '_self_drifted_words', {})),
             "_tamed_half_damage": getattr(self, '_tamed_half_damage', False),
             "heart_slots": list(getattr(self, 'heart_slots', [])),
             "_layer": self.area or "",
             "transform_power_mult": self._apply_transform_effects()[0],
             "transform_self_harm_mult": self._apply_transform_effects()[1],
             "_devil_self_harm_mult": dict(getattr(self, '_devil_self_harm_mult', {})),
+            "her_presence": self.her_presence,
+            "silence_counter": getattr(self, 'silence_counter', 0),
         }
 
     # ── 战斗指令 ──────────────────────────────
@@ -3538,6 +3538,7 @@ class DarkWorld:
         self.stats = p["stats"]
         self.words = p["words"]
         self.word_chambers = p.get("word_chambers", self.word_chambers)
+        self.age = p.get("age", self.age)
         # compliance走_change_compliance——触发词恢复逻辑
         combat_compliance = p["compliance"]
         delta = combat_compliance - self.compliance
@@ -3546,7 +3547,18 @@ class DarkWorld:
         self.hunger = p.get("hunger", self.hunger)
         self.inventory = p.get("inventory", self.inventory)
         self._drifted_words = p.get("_drifted_words", self._drifted_words)
+        # 战斗中的自我替换也要sync回
+        combat_self_drift = p.get("_self_drifted_words", {})
+        if combat_self_drift:
+            if not hasattr(self, '_self_drifted_words') or not self._self_drifted_words:
+                self._self_drifted_words = combat_self_drift
+            else:
+                self._self_drifted_words.update(combat_self_drift)
         self._devil_self_harm_mult = p.get("_devil_self_harm_mult", getattr(self, '_devil_self_harm_mult', {}))
+        # her_presence sync（回响协同的her-1可能改了）
+        combat_her = p.get("her_presence", None)
+        if combat_her is not None and combat_her != self.her_presence:
+            self.her_presence = combat_her
         # 跨局统计——从战斗拉取变形/被吞次数
         # 只拉增量，拉完清零——防止每回合重复累加
         dc = getattr(self.combat, 'deformation_count', 0)
@@ -3578,6 +3590,7 @@ class DarkWorld:
 
         # R抓走的死亡——不留墙、不加遗刻
         r_caught = getattr(self, '_r_caught', False)
+        self._r_caught = False  # 读完就清，防止下次死亡误判
 
         if not r_caught:
             self.echoes += 1
