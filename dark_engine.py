@@ -2698,6 +2698,9 @@ class DarkWorld:
         """遗忘一个词。"""
         if word not in self.words:
             return f"你没有'{word}'。或者你已经忘了。"
+        # 心位词不能忘
+        if word in self.heart_slots:
+            return f"'{word}'在心位。你忘不掉它。也不想忘。"
 
         self._remove_word(word)
         self.forgotten_words.append(word)
@@ -3833,14 +3836,7 @@ class DarkWorld:
 
     def _wipe_detailed_state(self):
         """删除详细状态，只保留摘要（模仿开新窗）。"""
-        # 保留的：echoes, unlocked_origins, wall_writings, echo_map,
-        #         killed_bosses, total_wait, runs
-        # 删除的：所有当局的细节——词库、属性、位置、任务等
-        keep = {
-            'echoes', 'unlocked_origins', 'wall_writings', 'echo_map',
-            'killed_bosses', 'total_wait', 'runs',
-        }
-        # 重置为初始值
+        # 重置为初始值——和_confirm_creation保持同步
         self.stats = roll_stats()
         self.age = random.randint(16, 45)
         self.origin = "落物"
@@ -3862,6 +3858,7 @@ class DarkWorld:
         self.her_presence = 0
         self.retreat_marks = 0
         self.current_sage = None
+        self.current_special = None
         self.mode = "real"
         self.deform_break = 0
         self.created_words = []
@@ -3876,6 +3873,49 @@ class DarkWorld:
         self.forgotten_words = []
         self.broken_solved = []
         self.current_broken = None
+        self.r_flags = 0
+        self._current_fake = None
+        # 重置WORD_WEAPON
+        import dark_data
+        dark_data.WORD_WEAPON = copy.deepcopy(_WORD_WEAPON_ORIG)
+        # 每轮重置的临时状态
+        self._four_o_met = False
+        self._four_o_active = False
+        self._wolf_met = False
+        self._tower_shouted = False
+        self._speak_self_harm_reduction = 0
+        self._drifted_words = {}
+        self._volatile_words = {}
+        self._rhizome_visits = {}
+        self._encounter_had = False
+        self._philosophy_rooms_seen = set()
+        self._bound_silent = False
+        self._forced_smile = False
+        self._self_drifted_words = {}
+        self._no_r_next_speak = False
+        self._auto_pass_blocked = False
+        self._ink_available = False
+        self._echo_stone_active = False
+        self._square_sit = 0
+        self._square_active = False
+        self._boss_pending = False
+        self._pending_pickup = None
+        self._last_heavy_msg = None
+        self._light_bearer_active = False
+        self._chose_light = False
+        self._crease_active = False
+        self._tavern_regular_active = False
+        self._tamed_half_damage = False
+        self.silence_counter = 0
+        self.her_trace_count = 0
+        # 变形/心位/语言物理——每局重置
+        self.active_transforms = []
+        self._transform_checked_this_room = False
+        self._devil_deal_active = False
+        self._angel_deal_active = False
+        self._devil_self_harm_mult = {}
+        self._physics_once = set()
+        # 清战斗状态
         self.phase = "dead"
         self.combat = None
 
@@ -4891,6 +4931,10 @@ class DarkWorld:
             return "你没有这些词。"
         if w1 == w2:
             return "不能拼自己。"
+        # 心位词不能当合成材料
+        if w1 in self.heart_slots or w2 in self.heart_slots:
+            protected = w1 if w1 in self.heart_slots else w2
+            return f"'{protected}'在心位。拼不动。它不走。"
 
         # 合成
         combined = w1 + w2

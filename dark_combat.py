@@ -399,13 +399,16 @@ class CombatState:
                 continue
             effect = special["effect"]
             # "我在"在喉腔：跳过变形谱
-            if effect == "bypass_deformation" and deformed:
+            if effect == "bypass_deformation" and (deformed or swallowed):
+                # 只撤销实际发生的惩罚
+                if deformed:
+                    total_power /= 0.4 if total_power > 0 else 1
+                    total_self /= 0.3 if total_self > 0 else 1
+                if swallowed:
+                    total_power /= 0.1 if total_power > 0 else 1
+                    total_self = max(total_self, 0)  # 被吞时self=0，不除
                 deformed = False
                 swallowed = False
-                # 恢复被变形/吞掉的部分
-                total_power /= 0.4 if total_power > 0 else 1  # 撤销变形打折
-                total_self /= 0.3 if total_self > 0 else 1
-                total_power /= 0.1 if total_power > 0 else 1  # 撤销被吞打折
                 self._log(special["line"])
             # "痛"在眼腔：看到变形原文（比清醒更强）
             elif effect == "see_deformation_enhanced" and deformed:
@@ -877,8 +880,7 @@ class CombatState:
         """对话式Boss——它不打你，它问你问题。"""
         p = self.player
         e = self.enemy
-        self.turn += 1
-        self._tick_cooldowns()
+        # turn和cooldowns已经在player_speak里递增过了，不再重复
 
         # 用词表分类器判断回答
         has_tier4 = any(w in text for w in CENSORED_WORDS.get(4, []))
@@ -947,12 +949,13 @@ class CombatState:
         return self._render()
 
     def is_over(self):
-        if self.player["hp"] <= 0:
-            return "dead"
+        # 同归于尽：敌人先死算赢（玩家说的话杀了它）
         if self.enemy["hp"] <= -900:
             return "fled"
         if self.enemy["hp"] <= 0:
             return "win"
+        if self.player["hp"] <= 0:
+            return "dead"
         return None
 
     def _render(self):
