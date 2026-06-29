@@ -264,7 +264,6 @@ def new_game():
     if compact:
         # 服务端存状态，返回session_id
         session_id = uuid.uuid4().hex[:16]
-        _sessions[session_id] = (state, time.time(), None)
         # 叙事完整保留，只去指令提示
         compact_output = _compact_text(text, "init")
         # 从state直接提取摘要，不用反序列化DarkWorld
@@ -308,8 +307,23 @@ def cmd_game():
 
         new_state, output = _cmd(state, instruction)
 
-        # 持久化meta进度
-        _save_meta(_extract_meta(new_state))
+        # 持久化meta进度——合并磁盘上的meta再写，避免多session覆盖
+        disk_meta = _load_meta()
+        session_meta = _extract_meta(new_state)
+        for k, v in session_meta.items():
+            if v is None:
+                continue
+            if k in ('killed_bosses', 'unlocked_origins', 'unlocked_achievements', 'wall_writings'):
+                # 列表/集合字段：合并去重
+                existing = set(disk_meta.get(k, []) or [])
+                new_vals = set(v) if isinstance(v, list) else {v}
+                disk_meta[k] = list(existing | new_vals)
+            elif k in ('echoes', 'runs', 'total_wait', 'cross_deform_count', 'cross_swallow_count'):
+                # 计数器：取最大值
+                disk_meta[k] = max(disk_meta.get(k, 0) or 0, v)
+            else:
+                disk_meta[k] = v
+        _save_meta(disk_meta)
 
         if compact:
             # 存回服务端

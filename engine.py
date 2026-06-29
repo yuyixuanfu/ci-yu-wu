@@ -308,8 +308,6 @@ def _status_bar_compact(w, last_words=None):
         parts.append(f"w:{','.join(w.words) if w.words else '-'}")
 
     # 战斗
-
-    # 战斗
     if w.phase == "combat" and w.combat:
         e = w.combat.enemy
         parts.append(f"e:{e.get('name','?')}:{e.get('hp',0)}")
