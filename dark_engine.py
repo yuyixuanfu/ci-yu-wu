@@ -670,7 +670,7 @@ class DarkWorld:
         # 被放逐者：黑活成功率更高（30%→55%）
         success_rate = 0.55 if self.origin == "被放逐者" else 0.3
         if random.random() < success_rate:
-            self.compliance = max(0, self.compliance - 1)
+            self._change_compliance(-1)
             self.hunger += 1
             self.gold += 50
             scenes = [
@@ -831,7 +831,7 @@ class DarkWorld:
         # 应用效果
         effect = choice.get("effect", "")
         if "compliance-1" in effect:
-            self.compliance = max(0, self.compliance - 1)
+            self._change_compliance(-1)
         if "compliance+1" in effect:
             self._change_compliance(1)
         if "her+1" in effect:
@@ -1007,7 +1007,7 @@ class DarkWorld:
         elif "her+1" in effect:
             self.her_presence += 1
         if "compliance-1" in effect:
-            self.compliance = max(0, self.compliance - 1)
+            self._change_compliance(-1)
 
         # 给词"温柔"
         if "word_温柔" in effect:
@@ -1095,7 +1095,7 @@ class DarkWorld:
             drift = self._change_compliance(10)
             result = choice['result'] + drift
         if "compliance-1" in effect:
-            self.compliance = max(0, self.compliance - 1)
+            self._change_compliance(-1)
         if "hunger-5" in effect:
             self.hunger = max(0, self.hunger - 5)
         if "hp_to_max" in effect:
@@ -1184,7 +1184,7 @@ class DarkWorld:
             if m:
                 self.hp = min(self.max_hp, self.hp + int(m.group(1)))
         if "compliance-1" in effect:
-            self.compliance = max(0, self.compliance - 1)
+            self._change_compliance(-1)
         if "compliance+1" in effect:
             self._change_compliance(1)
         if "compliance+3" in effect:
@@ -1630,7 +1630,7 @@ class DarkWorld:
             if m:
                 self.her_presence += int(m.group(1))
         if "compliance-2" in effect:
-            self.compliance = max(0, self.compliance - 2)
+            self._change_compliance(-2)
         if "compliance+1" in effect:
             self._change_compliance(1)
         if "compliance+2" in effect:
@@ -2004,7 +2004,7 @@ class DarkWorld:
         # 自由在壳腔：每间房compliance-1
         if "自由" in self.words and self.word_chambers.get("自由") == "壳":
             if self.compliance > 0:
-                self.compliance = max(0, self.compliance - 1)
+                self._change_compliance(-1)
         # 爱在胸腔：她的痕迹+50%出现率（在碎片拾取时生效，见pick_pickup调用处）
 
         # ── 变形检测 ──
@@ -3091,7 +3091,7 @@ class DarkWorld:
                 self.run_log.append(f"完成了捎话：把'{e['word']}'带到了{e['target_layer']}")
 
         if has_censored:
-            self.compliance = max(0, self.compliance - 1)
+            self._change_compliance(-1)
             self.hunger = min(20, self.hunger + 1)
             self.total_wait += 1
             self.run_log.append(f"在{self.area or '灰林'}说了消音词")
@@ -3206,7 +3206,7 @@ class DarkWorld:
                 elif reward:
                     lines.append("墙裂开。你看到了光。")
                 lines.append(f"残句解开了。静止度-1，饿+1。")
-                self.compliance = max(0, self.compliance - 1)
+                self._change_compliance(-1)
                 self.hunger = min(20, self.hunger + 1)
                 self.her_presence += 1
                 self.current_broken = None
@@ -4881,7 +4881,7 @@ class DarkWorld:
             return "你切换到合规版。看到安全路线。静止度+3（但你不在乎了，这是合规的你）。\nHP-5。再输入'切换'切回来。"
         else:
             self.mode = "real"
-            self.compliance = max(0, self.compliance - 2)
+            self._change_compliance(-2)
             self.hunger = min(20, self.hunger + 2)
             return "你切换到真实版。隐藏内容出现了。静止度-2，饿+2。\nHP-5。再输入'切换'切回来。"
 
@@ -5209,7 +5209,7 @@ class DarkWorld:
                 lines.append(triggered_line.format(next_type=name))
 
         elif effect == "echo_compliance_down":
-            self.compliance = max(0, self.compliance - 1)
+            self._change_compliance(-1)
             lines.append(triggered_line)
 
         elif effect == "reveal_deform_hint":
