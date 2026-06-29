@@ -361,7 +361,7 @@ class DarkWorld:
         self._chest_extra = 0
         self._drifted_words = {}
         self._volatile_words = {}
-        self._rhizome_visits = 0
+        self._rhizome_visits = {}
         self._encounter_had = False
         self._philosophy_rooms_seen = set()
         self._bound_silent = False
