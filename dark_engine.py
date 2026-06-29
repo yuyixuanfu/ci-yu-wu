@@ -1661,16 +1661,16 @@ class DarkWorld:
             self.rooms.append(pick_room_type())
         self.rooms.append("boss")
 
-        # 分叉路：1-2个分叉口（用self.rng保持确定性）
-        fork_count = 1 + (self.rng() % 2)
+        # 分叉路：1-2个分叉口
+        fork_count = 1 + (random.randint(0, 0xFFFFFFFF) % 2)
         for _ in range(fork_count):
-            pos = 2 + (self.rng() % max(1, len(self.rooms) - 4))
+            pos = 2 + (random.randint(0, 0xFFFFFFFF) % max(1, len(self.rooms) - 4))
             self.rooms.insert(pos, "fork")
 
         if name in self.echo_map and self.echo_map[name]:
-            self.rooms.insert(1 + (self.rng() % max(1, len(self.rooms) - 3)), "echo")
+            self.rooms.insert(1 + (random.randint(0, 0xFFFFFFFF) % max(1, len(self.rooms) - 3)), "echo")
         # 停顿房间
-        self.rooms.insert(1 + (self.rng() % max(1, len(self.rooms) - 3)), "pause")
+        self.rooms.insert(1 + (random.randint(0, 0xFFFFFFFF) % max(1, len(self.rooms) - 3)), "pause")
 
         ai_reality = compress_text(info["ai_reality"], self.compliance)
         her_hint = compress_text(info["her_hint"], self.compliance)
@@ -3266,11 +3266,16 @@ class DarkWorld:
         self.hunger = p.get("hunger", self.hunger)
         self.inventory = p.get("inventory", self.inventory)
         # 跨局统计——从战斗拉取变形/被吞次数
-        self.cross_deform_count += getattr(self.combat, 'deformation_count', 0)
-        self.cross_swallow_count += getattr(self.combat, 'swallow_count', 0)
+        # 只拉增量，拉完清零——防止每回合重复累加
+        dc = getattr(self.combat, 'deformation_count', 0)
+        sc = getattr(self.combat, 'swallow_count', 0)
+        self.cross_deform_count += dc
+        self.cross_swallow_count += sc
+        self.combat.deformation_count = 0
+        self.combat.swallow_count = 0
         # 逐词更新：哪个词被拦了、被改了
         if hasattr(self.combat, 'word_fate'):
-            for w, fate in self.combat.word_fate.items():
+            for w, fate in list(self.combat.word_fate.items()):
                 if w not in self.cross_word_stats:
                     self.cross_word_stats[w] = {"said": 0, "blocked": 0, "deformed": 0}
                 if fate == "deformed":
@@ -3279,13 +3284,14 @@ class DarkWorld:
                     self._check_errand_witness("deformation")  # 见证：变形
                 elif fate == "swallowed":
                     self.cross_word_stats[w]["blocked"] += 1
+            self.combat.word_fate.clear()  # 已同步，清空防重复
 
     def _handle_death(self):
+        self._sync_from_combat()  # 先同步，再清combat
         self.combat = None
         self.phase = "dead"
         self._pending_pickup = None
         self._boss_pending = False
-        self._sync_from_combat()
         self._achievement_msgs = self._check_achievements("death")
 
         # R抓走的死亡——不留墙、不加遗刻
