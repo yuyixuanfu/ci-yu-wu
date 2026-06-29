@@ -3459,7 +3459,11 @@ class DarkWorld:
         self.stats = p["stats"]
         self.words = p["words"]
         self.word_chambers = p.get("word_chambers", self.word_chambers)
-        self.compliance = p["compliance"]
+        # compliance走_change_compliance——触发词恢复逻辑
+        combat_compliance = p["compliance"]
+        delta = combat_compliance - self.compliance
+        if delta != 0:
+            self._change_compliance(delta)
         self.hunger = p.get("hunger", self.hunger)
         self.inventory = p.get("inventory", self.inventory)
         self._drifted_words = p.get("_drifted_words", self._drifted_words)
