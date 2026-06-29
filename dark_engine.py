@@ -417,6 +417,7 @@ class DarkWorld:
 
         self.phase = "town"
         self.runs += 1
+        self._check_achievements("new_run")
         self._save_meta()
 
         opening = compress_text(
@@ -3489,8 +3490,11 @@ class DarkWorld:
             # 追踪：变形记录
             if "不是你想说的" in result:
                 self.deformations_seen.append(text)
+                self.cross_deform_count += 1
+                self._check_achievements("deformed")
             if "没有声音" in result or "██" in result:
                 self.deformations_seen.append(f"{text}→被吞")
+                self.cross_swallow_count += 1
             # 传话任务检测
             for e in self.active_errands[:]:
                 if (e["type"] == "speak" and
@@ -3578,6 +3582,9 @@ class DarkWorld:
         self.cross_deform_count += dc
         self.cross_swallow_count += sc
         self.combat.deformation_count = 0
+        # 变形成就检查
+        if dc > 0:
+            self._check_achievements("deformed")
         self.combat.swallow_count = 0
         # 逐词更新：哪个词被拦了、被改了
         if hasattr(self.combat, 'word_fate'):

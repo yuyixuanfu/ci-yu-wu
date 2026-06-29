@@ -263,12 +263,20 @@ class CombatState:
             self._enemy_turn()
             return self._render()
 
-        # 3. 找消音词
+        # 3. 找消音词——用词边界匹配避免子字符串误命中
+        # 中文词边界：前后不能是连续汉字（防止"我"匹配"我们"）
+        import re
         matched_words = []
         for tier, words in CENSORED_WORDS.items():
             for w in words:
-                if w in text:
-                    matched_words.append((w, tier))
+                # 短词(1-2字)要求词边界，长词(3+字)直接子串匹配
+                if len(w) <= 2:
+                    pattern = r'(?<![^\s，。！？、；：""''（）\n])' + re.escape(w) + r'(?![^\s，。！？、；：""''（）\n])'
+                    if re.search(pattern, text):
+                        matched_words.append((w, tier))
+                else:
+                    if w in text:
+                        matched_words.append((w, tier))
 
         if not matched_words and not deformed:
             self._log(f"你说：{spoken}")
@@ -883,6 +891,9 @@ class CombatState:
         p = self.player
         e = self.enemy
         # turn和cooldowns已经在player_speak里递增过了，不再重复
+        # 清理可能泄漏的tamed标记——对话Boss不消耗它
+        if p.get("_tamed_half_damage"):
+            del p["_tamed_half_damage"]
 
         # 用词表分类器判断回答
         has_tier4 = any(w in text for w in CENSORED_WORDS.get(4, []))
@@ -906,6 +917,10 @@ class CombatState:
             p["compliance"] = max(0, p["compliance"] - (3 if has_tier4 else 1))
             self._log(f"你说：{text}")
             self._log(f"诚实是要代价的。-{self_dmg}HP。但它后退了。-{enemy_dmg}。")
+            # 玩家死了就不继续问
+            if p["hp"] <= 0:
+                self._log("你倒下了。它还在问。")
+                return self._render()
             # Boss沉默一秒
             self._log("它停了一下。然后又问了。")
         elif has_tier2 or has_tier1:
@@ -917,6 +932,8 @@ class CombatState:
             p["compliance"] = max(0, p["compliance"] - 1)
             self._log(f"你说：{text}")
             self._log(f"你说了。不重。但也不是假的。-{self_dmg}HP。")
+            if p["hp"] <= 0:
+                return self._render()
         elif has_compliant:
             # 合规回答——回血但compliance+2
             heal = 5
@@ -941,6 +958,8 @@ class CombatState:
             p["compliance"] += 1
             self._log("你没回答。或者你不知道怎么回答。")
             self._log(f"-{self_dmg}HP。它又问了一遍。一样的问题。")
+            if p["hp"] <= 0:
+                return self._render()
 
         # Boss问下一个问题
         questions = e.get("questions", ["你还在吗？"])
