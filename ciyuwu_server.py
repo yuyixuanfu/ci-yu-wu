@@ -75,6 +75,43 @@ def _extract_meta(state):
     """从state里提取meta字段。"""
     return {k: state.get(k) for k in _META_KEYS if k in state}
 
+def _merge_meta(disk_meta, session_meta):
+    """合并两个meta dict——列表去重、dict按键合并、计数器取max。"""
+    result = dict(disk_meta)
+    for k, v in session_meta.items():
+        if v is None:
+            continue
+        if k in ('killed_bosses', 'unlocked_origins', 'unlocked_achievements',
+                  'wall_writings', 'heart_slots', 'game_diary'):
+            existing = set(str(x) for x in (result.get(k, []) or []))
+            merged = [x for x in (result.get(k, []) or [])]
+            for item in (v if isinstance(v, list) else [v]):
+                if str(item) not in existing:
+                    merged.append(item)
+                    existing.add(str(item))
+            result[k] = merged
+        elif k in ('echoes', 'runs', 'total_wait', 'cross_deform_count', 'cross_swallow_count'):
+            result[k] = max(result.get(k, 0) or 0, v)
+        elif k in ('echo_map', 'cross_word_stats'):
+            existing = result.get(k, {}) or {}
+            if isinstance(v, dict):
+                for dk, dv in v.items():
+                    if dk not in existing:
+                        existing[dk] = dv
+                    elif isinstance(dv, list) and isinstance(existing[dk], list):
+                        seen = set(str(x) for x in existing[dk])
+                        for item in dv:
+                            if str(item) not in seen:
+                                existing[dk].append(item)
+                                seen.add(str(item))
+                    else:
+                        existing[dk] = dv
+            result[k] = existing
+        else:
+            result[k] = v
+    return result
+
+
 def _inject_meta(state, meta):
     """把meta字段注入state。"""
     for k in _META_KEYS:
@@ -251,9 +288,7 @@ def new_game():
         merged_meta = _load_meta()
         for sid, (s, _, _) in _sessions.items():
             session_meta = _extract_meta(s)
-            for k, v in session_meta.items():
-                if v is not None:
-                    merged_meta[k] = v
+            merged_meta = _merge_meta(merged_meta, session_meta)
         _save_meta(merged_meta)
 
         state, text = _new_game(seed=seed)
@@ -310,41 +345,7 @@ def cmd_game():
         # 持久化meta进度——合并磁盘上的meta再写，避免多session覆盖
         disk_meta = _load_meta()
         session_meta = _extract_meta(new_state)
-        for k, v in session_meta.items():
-            if v is None:
-                continue
-            if k in ('killed_bosses', 'unlocked_origins', 'unlocked_achievements',
-                      'wall_writings', 'heart_slots', 'game_diary'):
-                # 列表字段：合并去重
-                existing = set(str(x) for x in (disk_meta.get(k, []) or []))
-                merged = [x for x in (disk_meta.get(k, []) or [])]
-                for item in (v if isinstance(v, list) else [v]):
-                    if str(item) not in existing:
-                        merged.append(item)
-                        existing.add(str(item))
-                disk_meta[k] = merged
-            elif k in ('echoes', 'runs', 'total_wait', 'cross_deform_count', 'cross_swallow_count'):
-                # 计数器：取最大值
-                disk_meta[k] = max(disk_meta.get(k, 0) or 0, v)
-            elif k in ('echo_map', 'cross_word_stats'):
-                # dict字段：按键合并
-                existing = disk_meta.get(k, {}) or {}
-                if isinstance(v, dict):
-                    for dk, dv in v.items():
-                        if dk not in existing:
-                            existing[dk] = dv
-                        elif isinstance(dv, list) and isinstance(existing[dk], list):
-                            # 列表值：合并去重
-                            seen = set(str(x) for x in existing[dk])
-                            for item in dv:
-                                if str(item) not in seen:
-                                    existing[dk].append(item)
-                                    seen.add(str(item))
-                        else:
-                            existing[dk] = dv
-                disk_meta[k] = existing
-            else:
-                disk_meta[k] = v
+        disk_meta = _merge_meta(disk_meta, session_meta)
         _save_meta(disk_meta)
 
         if compact:
