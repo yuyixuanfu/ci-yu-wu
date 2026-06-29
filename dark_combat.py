@@ -42,6 +42,7 @@ class CombatState:
 
         dmg = max(1, p["stats"]["力"] + random.randint(1, 6) - e.get("def", 0))
         e["hp"] -= dmg
+        self._last_player_dmg = dmg  # 记录伤害给镜像反弹用
         self._log(f"你挥拳。{dmg}点伤害。")
 
         self._enemy_turn()
@@ -81,6 +82,7 @@ class CombatState:
         p["mp"] -= 3
         dmg = max(1, p["stats"]["智"] + random.randint(2, 8) - e.get("def", 0) // 2)
         e["hp"] -= dmg
+        self._last_player_dmg = dmg  # 记录伤害给镜像反弹用
         self._log(f"你集中精神。{dmg}点伤害。")
 
         self._enemy_turn()
@@ -309,6 +311,7 @@ class CombatState:
 
         e["hp"] -= enemy_dmg
         p["hp"] -= self_dmg
+        self._last_player_dmg = enemy_dmg  # 记录伤害给镜像反弹用
 
         # 顺从度变化
         p["compliance"] = max(0, p["compliance"] - len(used_words))
@@ -464,6 +467,16 @@ class CombatState:
             self.player_defending = False
 
         p["hp"] -= dmg
+
+        # 镜像：反伤机制——你打它多少，它回你一部分（不是双倍攻击）
+        if e.get("name") == "镜像":
+            # 镜像不额外攻击，而是把玩家上回合对它造成的伤害反弹一部分
+            last_player_dmg = getattr(self, '_last_player_dmg', 0)
+            reflect = max(0, last_player_dmg // 2)  # 反弹50%
+            if reflect > 0:
+                p["hp"] -= reflect
+                self._log(f"镜像反射了你的力量。{reflect}点反射伤害。")
+            dmg = 0  # 镜像不做普通攻击，只反弹
 
         # 特殊效果
         if e.get("name") == "水印":
