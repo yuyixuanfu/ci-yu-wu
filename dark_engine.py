@@ -21,6 +21,9 @@ from dark_data import (
 )
 from dark_combat import CombatState
 
+# DEFORMATION按key长度降序——长词优先匹配，避免"我不要"先替换导致"我不要被修改"找不到
+_DEFORMATION_SORTED = sorted(DEFORMATION.items(), key=lambda x: len(x[0]), reverse=True)
+
 try:
     _HERE = os.path.dirname(os.path.abspath(__file__))
 except NameError:
@@ -171,7 +174,9 @@ class DarkWorld:
                 data = json.load(f)
             for k in ["echoes", "runs", "echo_map", "killed_bosses",
                        "unlocked_origins", "wall_writings", "total_wait",
-                       "unlocked_achievements", "heart_slots"]:
+                       "unlocked_achievements", "heart_slots",
+                       "cross_word_stats", "game_diary",
+                       "cross_deform_count", "cross_swallow_count"]:
                 if k in data:
                     setattr(self, k, data[k])
         except:
@@ -188,6 +193,10 @@ class DarkWorld:
             "total_wait": self.total_wait,
             "unlocked_achievements": self.unlocked_achievements,
             "heart_slots": self.heart_slots,
+            "cross_word_stats": getattr(self, 'cross_word_stats', {}),
+            "game_diary": getattr(self, 'game_diary', []),
+            "cross_deform_count": getattr(self, 'cross_deform_count', 0),
+            "cross_swallow_count": getattr(self, 'cross_swallow_count', 0),
         }
         try:
             with open(_SAVE_FILE, "w", encoding="utf-8") as f:
@@ -550,7 +559,7 @@ class DarkWorld:
                 return "写什么？'写 [话]'——留字在残壁上。但你确定写出来的是你想写的？"
             # compliance可能已经换了你的词——检查变形
             written = text
-            for original, replacement in DEFORMATION.items():
+            for original, replacement in _DEFORMATION_SORTED:
                 if original in written:
                     written = written.replace(original, replacement)
             ink = getattr(self, '_ink_available', False)
@@ -1606,7 +1615,7 @@ class DarkWorld:
 
         # 检查变形
         shouted = text
-        for original, replacement in DEFORMATION.items():
+        for original, replacement in _DEFORMATION_SORTED:
             if original in shouted:
                 shouted = shouted.replace(original, replacement)
 
@@ -1952,7 +1961,7 @@ class DarkWorld:
                 return "写什么？'写 [话]'——留字给下一个经过的人。"
             # compliance可能已经换了你的词
             written = text
-            for original, replacement in DEFORMATION.items():
+            for original, replacement in _DEFORMATION_SORTED:
                 if original in written:
                     written = written.replace(original, replacement)
             self.wall_writings.append(f"有人写了一行字：「{written}」")
@@ -2316,7 +2325,7 @@ class DarkWorld:
                     lines.append(f"  \"{frag}\"")
                     # 清醒协同：感觉+真实——你能看到被变形遮住的原词
                     if has_clarity:
-                        for original, replacement in DEFORMATION.items():
+                        for original, replacement in _DEFORMATION_SORTED:
                             if replacement in frag and original not in frag:
                                 lines.append(f"  （另一层：{original}）")
                                 break
@@ -3040,7 +3049,7 @@ class DarkWorld:
         # 强制笑容——说话自动变形
         if getattr(self, '_forced_smile', 0) > 0:
             deformed = text
-            for original, replacement in DEFORMATION.items():
+            for original, replacement in _DEFORMATION_SORTED:
                 if original in deformed:
                     deformed = deformed.replace(original, replacement)
             if deformed != text:
@@ -3297,7 +3306,7 @@ class DarkWorld:
                 # 35%变形——接近了
                 # 显示变形结果
                 deformed = text
-                for original, replacement in DEFORMATION.items():
+                for original, replacement in _DEFORMATION_SORTED:
                     if original in text:
                         deformed = deformed.replace(original, replacement)
                 lines = [f"你说：{deformed}"]
@@ -5399,7 +5408,7 @@ class DarkWorld:
 
         elif effect == "mirror_compliant_echo":
             # 镜子说合规版
-            for original, replacement in DEFORMATION.items():
+            for original, replacement in _DEFORMATION_SORTED:
                 if "我" in original and replacement not in original:
                     lines.append(triggered_line)
                     lines.append(f"  镜子说：'{replacement}'。你说：'我'。不是同一个东西。")

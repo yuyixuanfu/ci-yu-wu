@@ -47,7 +47,9 @@ _SESSION_TTL = 3600  # 1小时过期
 _META_FILE = os.path.join(_HERE, "ciyuwu_meta.json")
 _META_KEYS = ["echoes", "runs", "echo_map", "killed_bosses",
               "unlocked_origins", "wall_writings", "total_wait",
-              "unlocked_achievements", "heart_slots"]
+              "unlocked_achievements", "heart_slots",
+              "cross_word_stats", "game_diary",
+              "cross_deform_count", "cross_swallow_count"]
 
 def _load_meta():
     """从磁盘读meta进度。"""

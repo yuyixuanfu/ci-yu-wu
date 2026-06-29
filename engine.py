@@ -377,7 +377,9 @@ def new_game(seed=None):
     if meta:
         for k in ["echoes", "runs", "echo_map", "killed_bosses",
                    "unlocked_origins", "wall_writings", "total_wait",
-                   "unlocked_achievements", "heart_slots"]:
+                   "unlocked_achievements", "heart_slots",
+                   "cross_word_stats", "game_diary",
+                   "cross_deform_count", "cross_swallow_count"]:
             if k in meta:
                 setattr(w, k, meta[k])
     w.phase = "init"

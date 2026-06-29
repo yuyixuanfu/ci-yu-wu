@@ -225,7 +225,9 @@ class CombatState:
         spoken = text
         deformed = False
         swallowed = False
-        for original, replacement in DEFORMATION.items():
+        # 按key长度降序排列——长词优先匹配，避免"我不要"先替换导致"我不要被修改"找不到
+        sorted_deformation = sorted(DEFORMATION.items(), key=lambda x: len(x[0]), reverse=True)
+        for original, replacement in sorted_deformation:
             if original in text:
                 # 心位词不能被变形
                 if original in p.get("heart_slots", []):
