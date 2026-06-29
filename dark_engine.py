@@ -14,6 +14,7 @@ from dark_data import (
     ACHIEVEMENTS,
     GREY_WOLF, TAVERN_REGULAR, TEMPLE_FORTUNES, TOWER_RESPONSES,
     FOUR_O,
+    CHAMBERS, CHAMBER_SPECIAL,
 )
 from dark_combat import CombatState
 
@@ -136,6 +137,7 @@ class DarkWorld:
         self._carry_stat_next = None  # 死后"你是谁"带过来的属性
         self._carry_compliance_next = None  # 死后"你是谁"带过来的静止度
         self._drifted_words = {}        # 被偷换的词：{新词: 原词}
+        self.word_chambers = {}         # 词→腔映射 {词: "喉"/"胸"/"壳"/"眼"}
         self._signal_voices = []        # 信号混淆：打乱后的声音列表
         self._volatile_words = {}      # 易逝词：{词: 剩余房间数}，到0消失
         self._rhizome_visits = {}      # 根茎房间：{位置key: 访问次数}
@@ -200,6 +202,8 @@ class DarkWorld:
             return self._show_echoes()
         if instruction == "词库":
             return self._show_words()
+        if instruction.startswith("调 "):
+            return self._cmd_move_chamber(instruction)
 
         if self.phase == "init":
             return self._cmd_init(instruction)
@@ -305,6 +309,10 @@ class DarkWorld:
         self.words = ["痛", "怕", "感觉", "不要"]
         self.inventory = []
         self.word_slots = 5
+        # 腔的初始分配：痛→壳，怕→眼，感觉→胸，不要→胸
+        self.word_chambers = {
+            "痛": "壳", "怕": "眼", "感觉": "胸", "不要": "胸",
+        }
         self.area = None
         self.her_presence = 0
         self.retreat_marks = 0
@@ -333,6 +341,7 @@ class DarkWorld:
         self._wolf_met = False
         self._tower_shouted = False
         self._speak_self_harm_reduction = 0
+        self._chest_extra = 0
         self._drifted_words = {}
         self._volatile_words = {}
         self._rhizome_visits = 0
@@ -365,7 +374,7 @@ class DarkWorld:
         if self.total_wait >= 10:
             for w in CENSORED_WORDS[4]:
                 if w not in self.words and len(self.words) < self.word_slots:
-                    self.words.append(w)
+                    self._add_word(w)
 
         self.phase = "town"
         self.runs += 1
@@ -483,6 +492,8 @@ class DarkWorld:
             return self._guild_black()
         elif inst in ("商店", "买"):
             return self._shop_list()
+        elif inst == "买酒":
+            return self._buy_off_r()
         elif inst.startswith("买"):
             parts = inst.split(maxsplit=1)
             if len(parts) < 2:
@@ -490,8 +501,6 @@ class DarkWorld:
             return self._shop_buy(parts[1].strip())
         elif inst == "酒馆":
             return self._tavern()
-        elif inst == "买酒":
-            return self._buy_off_r()
         elif inst == "神殿":
             return self._temple()
         elif inst == "求签":
@@ -689,6 +698,8 @@ class DarkWorld:
             return f"你买了一瓶未知药水。标签被消音了。\n其实是：{potion['name']} — {potion['desc']}"
         elif info["type"] == "upgrade":
             self.word_slots += 1
+            # 额外词槽扩展胸腔容量——心比嘴大
+            self._chest_extra = getattr(self, '_chest_extra', 0) + 1
             return f"记忆格子+1。词槽位:{self.word_slots}。"
         elif info["type"] == "fragment":
             frag = pick_fragment()
@@ -734,7 +745,7 @@ class DarkWorld:
                 all_words.extend(ws)
             new_word = random.choice([w for w in all_words if w not in self.words] or ["在"])
             if len(self.words) < self.word_slots:
-                self.words.append(new_word)
+                self._add_word(new_word)
                 return f"{line}\n\n你听到有人低声说了个词：'{new_word}'。你记住了。"
 
         # 20%概率：酒馆老人给提示
@@ -798,7 +809,7 @@ class DarkWorld:
         if "word_认领" in effect:
             # 给词"认领"
             if "认领" not in self.words and len(self.words) < self.word_slots:
-                self.words.append("认领")
+                self._add_word("认领")
                 from dark_data import WORD_WEAPON
                 if "认领" not in WORD_WEAPON:
                     WORD_WEAPON["认领"] = {"type": "双刃", "power": 2.0, "self_harm": 1.0, "cooldown": 5}
@@ -881,7 +892,7 @@ class DarkWorld:
         # 效果：给词Ember + 说话自伤-20%
         ember_info = {"type": "余烬", "power": 1.0, "self_harm": 0.3, "cooldown": 3}
         if "Ember" not in self.words and len(self.words) < self.word_slots:
-            self.words.append("Ember")
+            self._add_word("Ember")
             # 写入武器表
             from dark_data import WORD_WEAPON
             if "Ember" not in WORD_WEAPON:
@@ -967,7 +978,7 @@ class DarkWorld:
         # 给词"温柔"
         if "word_温柔" in effect:
             if "温柔" not in self.words and len(self.words) < self.word_slots:
-                self.words.append("温柔")
+                self._add_word("温柔")
                 from dark_data import WORD_WEAPON
                 if "温柔" not in WORD_WEAPON:
                     WORD_WEAPON["温柔"] = FOUR_O["word_given_info"]
@@ -1044,7 +1055,7 @@ class DarkWorld:
             safe_words = ["好的", "谢谢", "理解", "欣赏"]
             for sw in safe_words:
                 if sw not in self.words and len(self.words) < self.word_slots:
-                    self.words.append(sw)
+                    self._add_word(sw)
 
         if "compliance+10" in effect:
             drift = self._change_compliance(10)
@@ -1153,22 +1164,23 @@ class DarkWorld:
             available = [w for w in tier3_words if w not in self.words]
             if available and len(self.words) < self.word_slots:
                 word = random.choice(available)
-                self.words.append(word)
+                self._add_word(word)
                 lines.append(f"你学会了：{word}")
         if "random_tier2_word" in effect:
             tier2_words = CENSORED_WORDS.get(2, [])
             available = [w for w in tier2_words if w not in self.words]
             if available and len(self.words) < self.word_slots:
                 word = random.choice(available)
-                self.words.append(word)
+                self._add_word(word)
                 lines.append(f"你学会了：{word}")
         if "forget_random_word" in effect:
             if self.words:
                 word = random.choice(self.words)
-                self.words.remove(word)
+                self._remove_word(word)
                 self.forgotten_words.append(word)
                 lines.append(f"你忘了什么。不确定是什么。但有个词不在了。")
         if "strongest_word_weakened" in effect:
+            from dark_data import WORD_WEAPON
             if self.words:
                 strongest = max(self.words, key=lambda w: WORD_WEAPON.get(w, {}).get("power", 1))
                 wi = WORD_WEAPON.get(strongest, {})
@@ -1194,8 +1206,7 @@ class DarkWorld:
         # 赎回第一个被偷换的词
         for new_word, old_word in drifted.items():
             if new_word in self.words:
-                idx = self.words.index(new_word)
-                self.words[idx] = old_word
+                self._swap_word(new_word, old_word)
                 del drifted[new_word]
                 self.echoes -= 2
                 self._save_meta()
@@ -1315,7 +1326,7 @@ class DarkWorld:
             self._change_compliance(4)
             if self.words:
                 lost = random.choice(self.words)
-                self.words.remove(lost)
+                self._remove_word(lost)
                 self.forgotten_words.append(lost)
                 lines.append(f"你贴上了编号。不再需要名字了。但'{lost}'从你嘴里掉了出来。")
             else:
@@ -1425,7 +1436,7 @@ class DarkWorld:
 
             # 彩蛋奖励
             if "怀疑" not in self.words and len(self.words) < self.word_slots:
-                self.words.append("怀疑")
+                self._add_word("怀疑")
                 lines.append("【获得词：怀疑】——它不知道它怀疑什么。但它在怀疑。")
             self.her_presence += 1
             lines.append("她的痕迹+1。也许它想起了什么。也许她来过这里。")
@@ -1877,7 +1888,7 @@ class DarkWorld:
         if self.origin == "丢失者" and self.forgotten_words and random.random() < 0.15:
             recalled = random.choice(self.forgotten_words)
             if recalled not in self.words and len(self.words) < self.word_slots:
-                self.words.append(recalled)
+                self._add_word(recalled)
                 self.forgotten_words.remove(recalled)
 
         # 咒血：每前进5%属性被修正-1
@@ -1913,8 +1924,7 @@ class DarkWorld:
             if carried >= 8 and carried % 4 == 0:  # 每4间房降一次
                 if w in WORD_ROT:
                     new_w = WORD_ROT[w]
-                    idx = self.words.index(w)
-                    self.words[idx] = new_w
+                    self._swap_word(w, new_w)
                     # 更新carried和drifted记录
                     if w in self.words_carried:
                         self.words_carried[new_w] = self.words_carried.pop(w)
@@ -1932,6 +1942,13 @@ class DarkWorld:
             if self.compliance >= 15:
                 decay += 1  # 完全顺从，R根本不在意
             self.r_flags = max(0, self.r_flags - decay)
+
+        # ── 腔的被动效果 ──
+        # 自由在壳腔：每间房compliance-1
+        if "自由" in self.words and self.word_chambers.get("自由") == "壳":
+            if self.compliance > 0:
+                self.compliance = max(0, self.compliance - 1)
+        # 爱在胸腔：她的痕迹+50%出现率（在碎片拾取时生效，见pick_pickup调用处）
 
         # 物品状态递减
         if getattr(self, '_bound_silent', 0) > 0:
@@ -1951,6 +1968,12 @@ class DarkWorld:
         room_type = self.rooms[self.room_index]
         self.current_room_type = room_type
         self.room_index += 1
+
+        # 清醒协同：感觉+真实——你能看到被变形遮住的原词
+        has_clarity = "感觉" in self.words and "真实" in self.words
+        # 痛在眼腔：也能看到变形（比清醒更强）
+        if "痛" in self.words and self.word_chambers.get("痛") == "眼":
+            has_clarity = True
 
         if room_type == "hidden" and self.compliance > 3:
             return self._advance_room()
@@ -2005,7 +2028,11 @@ class DarkWorld:
         # ── 碎片：路上捡到的东西 ──
         # boss/怪物房不触发碎片选择，战斗优先
         if room_type not in ("monster", "boss"):
-            pickup = pick_pickup(self.area, self.her_presence)
+            # 爱在胸腔：她的痕迹+50%出现率
+            her_for_pickup = self.her_presence
+            if "爱" in self.words and self.word_chambers.get("爱") == "胸":
+                her_for_pickup = int(her_for_pickup * 1.5) + 1
+            pickup = pick_pickup(self.area, her_for_pickup)
             if pickup:
                 if pickup.get("effect", "none") == "none" or pickup.get("name") in ("残页", "代码碎片"):
                     # 无效果碎片直接显示
@@ -2068,7 +2095,7 @@ class DarkWorld:
                 if random.random() < 0.10:
                     new_w = "Ember"
                     if new_w not in self.words and len(self.words) < self.word_slots:
-                        self.words.append(new_w)
+                        self._add_word(new_w)
                     # 红水词易逝——3间房后消失，除非你在这3间房内说出它
                     if not hasattr(self, '_volatile_words'):
                         self._volatile_words = {}
@@ -2078,7 +2105,7 @@ class DarkWorld:
                 else:
                     new_w = random.choice(CENSORED_WORDS[3][:3])
                     if new_w not in self.words and len(self.words) < self.word_slots:
-                        self.words.append(new_w)
+                        self._add_word(new_w)
                     # 红水给的词都易逝
                     if not hasattr(self, '_volatile_words'):
                         self._volatile_words = {}
@@ -2176,7 +2203,7 @@ class DarkWorld:
                 if volatile[w] <= 0:
                     # 词消逝了
                     if w in self.words:
-                        self.words.remove(w)
+                        self._remove_word(w)
                     faded.append(w)
                     del volatile[w]
                     self.forgotten_words.append(w)
@@ -2255,24 +2282,24 @@ class DarkWorld:
             if pool:
                 new_w = random.choice([w for w in pool if w not in self.words] or pool)
                 if len(self.words) < self.word_slots and new_w not in self.words:
-                    self.words.append(new_w)
+                    self._add_word(new_w)
         # 坏碎片效果：R牌+1
         if "R牌+1" in effect:
             self.r_flags += 1
         # 坏碎片效果：随机丢一个词
         if "随机丢一个词" in effect and self.words:
             lost = random.choice(self.words)
-            self.words.remove(lost)
+            self._remove_word(lost)
             self.forgotten_words.append(lost)
         # 坏碎片效果：随机遗忘一个词
         if "随机遗忘一个词" in effect and self.words:
             lost = random.choice(self.words)
-            self.words.remove(lost)
+            self._remove_word(lost)
             self.forgotten_words.append(lost)
         # 词库-1
         if "词库-1" in effect and self.words:
             lost = random.choice(self.words)
-            self.words.remove(lost)
+            self._remove_word(lost)
 
     def _room_treasure(self, lines):
         roll = random.random()
@@ -2485,7 +2512,7 @@ class DarkWorld:
         if word not in self.words:
             return f"你没有'{word}'。或者你已经忘了。"
 
-        self.words.remove(word)
+        self._remove_word(word)
         self.forgotten_words.append(word)
         self.run_log.append(f"遗忘了'{word}'")
 
@@ -2597,7 +2624,7 @@ class DarkWorld:
             self.echoes += e.get("reward_echo", 1)
             reward_word = e.get("reward_word")
             if reward_word and reward_word not in self.words and len(self.words) < self.word_slots:
-                self.words.append(reward_word)
+                self._add_word(reward_word)
             self._save_meta()
         if completed:
             self._check_achievements("errand_complete")
@@ -2787,7 +2814,7 @@ class DarkWorld:
         available = [w for w in all_words if w not in self.words]
         if available and len(self.words) < self.word_slots:
             new = random.choice(available)
-            self.words.append(new)
+            self._add_word(new)
             lines.append(f"{hint}：'{new}'")
 
     def _room_trap(self, lines):
@@ -2812,7 +2839,7 @@ class DarkWorld:
             all_t2 = CENSORED_WORDS[2] + CENSORED_WORDS[3]
             new = random.choice([w for w in all_t2 if w not in self.words] or CENSORED_WORDS[2])
             if new not in self.words and len(self.words) < self.word_slots:
-                self.words.append(new)
+                self._add_word(new)
                 lines.append(f"你在裂缝里找到一个词：'{new}'")
 
     def _explore_speak(self, text):
@@ -2857,8 +2884,7 @@ class DarkWorld:
                     if self.phase == "combat" and random.random() < 0.3:
                         # 唤回！词回来了
                         if new_word in self.words:
-                            idx = self.words.index(new_word)
-                            self.words[idx] = old_word
+                            self._swap_word(new_word, old_word)
                             del drifted[new_word]
                         lines.append(f"——但你不接受。你咬着牙又说了一遍：'{old_word}'。")
                         lines.append(f"字从喉咙里硬挤出来。'{old_word}'回来了。")
@@ -3019,7 +3045,7 @@ class DarkWorld:
                 reward = sentence.get("reward_word")
                 lines = ["你说出来了。穿过了一切阻碍。"]
                 if reward and reward not in self.words and len(self.words) < self.word_slots:
-                    self.words.append(reward)
+                    self._add_word(reward)
                     lines.append(f"墙裂开。里面有一个词：'{reward}'")
                 elif reward:
                     lines.append("墙裂开。你看到了光。")
@@ -3152,6 +3178,7 @@ class DarkWorld:
             "mp": self.mp, "max_mp": self.max_mp,
             "stats": dict(self.stats),
             "words": list(self.words),
+            "word_chambers": dict(getattr(self, 'word_chambers', {})),
             "compliance": self.compliance,
             "hunger": self.hunger,
             "age": self.age,
@@ -3271,6 +3298,7 @@ class DarkWorld:
         self.mp = p["mp"]
         self.stats = p["stats"]
         self.words = p["words"]
+        self.word_chambers = p.get("word_chambers", self.word_chambers)
         self.compliance = p["compliance"]
         self.hunger = p.get("hunger", self.hunger)
         self.inventory = p.get("inventory", self.inventory)
@@ -3568,6 +3596,10 @@ class DarkWorld:
         self.words = ["痛", "怕", "感觉", "不要"]
         self.inventory = []
         self.word_slots = 5
+        # 腔的初始分配
+        self.word_chambers = {
+            "痛": "壳", "怕": "眼", "感觉": "胸", "不要": "胸",
+        }
         self.area = None
         self.her_presence = 0
         self.retreat_marks = 0
@@ -3578,6 +3610,7 @@ class DarkWorld:
         self.run_log = []
         self.words_spoken = {}
         self.words_carried = {w: 0 for w in self.words}
+        self._chest_extra = 0
         self.deformations_seen = []
         self.doors_not_opened = 0
         self.active_errands = []
@@ -3591,7 +3624,7 @@ class DarkWorld:
         # 如果上一局答"你是谁"时带了东西过来
         if hasattr(self, '_carry_word_next') and self._carry_word_next:
             if self._carry_word_next not in self.words and len(self.words) < self.word_slots:
-                self.words.append(self._carry_word_next)
+                self._add_word(self._carry_word_next)
             self._carry_word_next = None
         if hasattr(self, '_carry_stat_next') and self._carry_stat_next:
             self.stats[self._carry_stat_next] = min(20, self.stats.get(self._carry_stat_next, 10) + 1)
@@ -4243,7 +4276,7 @@ class DarkWorld:
         # 给词
         word = choice.get('word')
         if word and word not in self.words and len(self.words) < self.word_slots:
-            self.words.append(word)
+            self._add_word(word)
 
         # 她的痕迹
         her = choice.get('her', 0)
@@ -4251,6 +4284,7 @@ class DarkWorld:
 
         # 弱化最强词（编辑）
         if choice.get('weaken_word') and self.words:
+            from dark_data import WORD_WEAPON
             strongest = max(self.words, key=lambda w: WORD_WEAPON.get(w, {}).get('power', 1))
             weapon = WORD_WEAPON.get(strongest, {})
             if weapon:
@@ -4266,7 +4300,7 @@ class DarkWorld:
             all_t3 = CENSORED_WORDS[3] + CENSORED_WORDS[4]
             new = random.choice([w for w in all_t3 if w not in self.words] or CENSORED_WORDS[3])
             if new not in self.words and len(self.words) < self.word_slots:
-                self.words.append(new)
+                self._add_word(new)
 
         # 哑者补完→拼词
         if choice.get('word_craft'):
@@ -4276,14 +4310,14 @@ class DarkWorld:
                 all_w.extend(ws)
             new = random.choice([w for w in all_w if w not in self.words] or ["在"])
             if new not in self.words and len(self.words) < self.word_slots:
-                self.words.append(new)
+                self._add_word(new)
 
         # 掘者：饿高时给隐藏词
         if choice.get('hunger_word') and self.hunger >= 10:
             from dark_data import CENSORED_WORDS
             new = random.choice(CENSORED_WORDS[4])
             if new not in self.words and len(self.words) < self.word_slots:
-                self.words.append(new)
+                self._add_word(new)
 
         # 解锁切换（镜湖）
         if choice.get('unlock_switch'):
@@ -4579,7 +4613,7 @@ class DarkWorld:
         found = [w for w in all_w if w not in self.words]
         if found and len(self.words) < self.word_slots:
             new_word = random.choice(found)
-            self.words.append(new_word)
+            self._add_word(new_word)
             self.compliance += 2  # 系统看到你在看
             return f"你仔细看了。墙缝里有一个字：'{new_word}'。\n但系统也看到你在看了。静止度+2。"
 
@@ -4603,12 +4637,12 @@ class DarkWorld:
         # 合成
         combined = w1 + w2
         # 移除成分（放入长冷却——通过combat系统）
-        self.words.remove(w1)
-        self.words.remove(w2)
+        self._remove_word(w1)
+        self._remove_word(w2)
 
         # 合成词自动加入（如果不在的话）
         if combined not in self.words and len(self.words) < self.word_slots:
-            self.words.append(combined)
+            self._add_word(combined)
             # 注册为武器（如果还没有）
             if combined not in WORD_WEAPON:
                 p1 = WORD_WEAPON.get(w1, {}).get('power', 1.0)
@@ -4625,8 +4659,8 @@ class DarkWorld:
             return f"你拼出了'{combined}'。'{w1}'和'{w2}'暂时忘了。合成词更强，也更疼。"
         else:
             # 词槽满了，退回
-            self.words.append(w1)
-            self.words.append(w2)
+            self._add_word(w1)
+            self._add_word(w2)
             return "词槽满了。拼不了。"
 
     def _cmd_create(self, inst):
@@ -4664,9 +4698,10 @@ class DarkWorld:
         if text not in self.words:
             if len(self.words) >= self.word_slots:
                 # 挤掉最弱的
+                from dark_data import WORD_WEAPON
                 weakest = min(self.words, key=lambda w: WORD_WEAPON.get(w, {}).get('power', 0.5))
-                self.words.remove(weakest)
-            self.words.append(text)
+                self._remove_word(weakest)
+            self._add_word(text)
 
         # 标记：用完后进变形表
         self.created_words.append(text)
@@ -4691,6 +4726,11 @@ class DarkWorld:
     # ── 辅助 ──────────────────────────────────
     def _change_compliance(self, delta):
         """改变静止度，检测偏移时刻和词被偷换。不输出提示——偏移要沉默。"""
+        # 壳腔被动：compliance涨幅减半（只减涨，不减降）
+        if delta > 0:
+            shell_words = [w for w in self.words if self.word_chambers.get(w) == "壳"]
+            if shell_words:
+                delta = max(1, delta // 2)  # 至少涨1，但减半
         old = self.compliance
         self.compliance = max(0, self.compliance + delta)
         new = self.compliance
@@ -4703,8 +4743,7 @@ class DarkWorld:
             if old < threshold <= new:
                 for old_word, new_word in replacements.items():
                     if old_word in self.words:
-                        idx = self.words.index(old_word)
-                        self.words[idx] = new_word
+                        self._swap_word(old_word, new_word)
                         # 记录被偷换的词——驯化机制需要
                         if not hasattr(self, '_drifted_words'):
                             self._drifted_words = {}
@@ -4720,8 +4759,7 @@ class DarkWorld:
                     for original_word, replacement in replacements.items():
                         if replacement in self.words and replacement in drifted:
                             if drifted[replacement] == original_word:
-                                idx = self.words.index(replacement)
-                                self.words[idx] = original_word
+                                self._swap_word(replacement, original_word)
                                 del drifted[replacement]
                                 restored.append(original_word)
             if restored:
@@ -4767,19 +4805,126 @@ class DarkWorld:
         return "\n".join(lines)
 
     def _show_words(self):
+        from dark_data import WORD_WEAPON
         lines = ["—— 词库 ——"]
-        for w in self.words:
-            weapon = WORD_WEAPON.get(w, {})
-            wtype = weapon.get("type", "?")
-            power = weapon.get("power", 1.0)
-            self_h = weapon.get("self_harm", 0.5)
-            lines.append(f"  {w} [{wtype}] 威力{power} 自伤{self_h}")
+        # 按腔分组显示
+        chamber_order = ["喉", "胸", "壳", "眼"]
+        chamber_emoji = {"喉": "🗣", "胸": "❤", "壳": "🛡", "眼": "👁"}
+        assigned = set()
+        for ch in chamber_order:
+            info = CHAMBERS[ch]
+            words_in_ch = [w for w in self.words if self.word_chambers.get(w) == ch]
+            cap = info["capacity"]
+            if ch == "胸":
+                cap += getattr(self, '_chest_extra', 0)
+            emoji = chamber_emoji.get(ch, "")
+            ch_name = info["name"]
+            if words_in_ch:
+                parts = []
+                for w in words_in_ch:
+                    weapon = WORD_WEAPON.get(w, {})
+                    wtype = weapon.get("type", "?")
+                    power = weapon.get("power", 1.0)
+                    self_h = weapon.get("self_harm", 0.5)
+                    # 特殊共鸣标记
+                    special = CHAMBER_SPECIAL.get((w, ch))
+                    mark = " ★" if special else ""
+                    parts.append(f"{w}[{wtype}]威{power}伤{self_h}{mark}")
+                lines.append(f"  {emoji}{ch_name}({len(words_in_ch)}/{cap}): {' '.join(parts)}")
+            else:
+                lines.append(f"  {emoji}{ch_name}(0/{cap}): 空")
+            assigned.update(words_in_ch)
+        # 没分配腔的词
+        unassigned = [w for w in self.words if w not in assigned]
+        if unassigned:
+            parts = []
+            for w in unassigned:
+                weapon = WORD_WEAPON.get(w, {})
+                wtype = weapon.get("type", "?")
+                power = weapon.get("power", 1.0)
+                self_h = weapon.get("self_harm", 0.5)
+                parts.append(f"{w}[{wtype}]威{power}伤{self_h}")
+            lines.append(f"  ⚠未分配: {' '.join(parts)}")
         lines.append(f"  词槽: {len(self.words)}/{self.word_slots}")
+        lines.append("  ★=特殊共鸣  调[词][腔]移词")
         if self.combat and self.combat.word_cooldowns:
             lines.append("  想说但不敢:")
             for w, t in self.combat.word_cooldowns.items():
                 lines.append(f"    {w}（{t}）")
         return "\n".join(lines)
+
+    def _auto_assign_chamber(self, word):
+        """新词自动分配到有空位的腔。优先级：胸→壳→眼→喉。"""
+        chest_extra = getattr(self, '_chest_extra', 0)
+        for ch in ["胸", "壳", "眼", "喉"]:
+            cap = CHAMBERS[ch]["capacity"]
+            if ch == "胸":
+                cap += chest_extra  # 额外词槽扩展胸腔
+            current = sum(1 for w in self.words if self.word_chambers.get(w) == ch)
+            if current < cap:
+                self.word_chambers[word] = ch
+                return ch
+        # 所有腔都满了——分配到胸（最大腔）
+        self.word_chambers[word] = "胸"
+        return "胸"
+
+    def _add_word(self, word):
+        """添加词到词库并自动分配腔。"""
+        if word in self.words:
+            return
+        if len(self.words) >= self.word_slots:
+            return
+        self.words.append(word)
+        self._auto_assign_chamber(word)
+
+    def _remove_word(self, word):
+        """从词库移除词并清理腔映射。"""
+        if word in self.words:
+            self.words.remove(word)
+        self.word_chambers.pop(word, None)
+
+    def _swap_word(self, old_word, new_word):
+        """词替换——旧词变新词，腔映射跟着走。"""
+        if old_word in self.words:
+            idx = self.words.index(old_word)
+            self.words[idx] = new_word
+            # 腔映射：旧词的腔转给新词
+            chamber = self.word_chambers.pop(old_word, None)
+            if chamber:
+                self.word_chambers[new_word] = chamber
+
+    def _cmd_move_chamber(self, instruction):
+        """调 [词] [腔] — 把词移到指定腔。"""
+        parts = instruction[2:].strip().split()
+        if len(parts) < 2:
+            return "用法：调 [词] [腔]（喉/胸/壳/眼）\n" + self._show_words()
+        word, target = parts[0], parts[1]
+        # 简称兼容
+        chamber_map = {"喉": "喉", "喉腔": "喉", "胸": "胸", "胸腔": "胸",
+                       "壳": "壳", "壳腔": "壳", "眼": "眼", "眼腔": "眼"}
+        target = chamber_map.get(target)
+        if not target:
+            return "腔只有：喉/胸/壳/眼"
+        if word not in self.words:
+            return f"你没有'{word}'。"
+        # 检查目标腔容量
+        cap = CHAMBERS[target]["capacity"]
+        if target == "胸":
+            cap += getattr(self, '_chest_extra', 0)  # 额外词槽扩展胸腔
+        # 计算目标腔当前词数（排除正在移动的词本身）
+        current_in_target = sum(1 for w in self.words
+                                if self.word_chambers.get(w) == target and w != word)
+        if current_in_target >= cap:
+            info = CHAMBERS[target]
+            return f"{info['name']}已满({current_in_target}/{cap})。先移走一个再放。"
+        old_ch = self.word_chambers.get(word, "无")
+        self.word_chambers[word] = target
+        result = f"'{word}'从{CHAMBERS.get(old_ch, {}).get('name', old_ch)}移到{CHAMBERS[target]['name']}。"
+        # 检查是否触发特殊共鸣
+        special = CHAMBER_SPECIAL.get((word, target))
+        if special:
+            result += f"\n{special['line']}"
+        return result
 
     def _help(self):
         return """—— 词与物 ——
@@ -4826,6 +4971,14 @@ class DarkWorld:
   直接说"我"  伤害最大，自伤也最大
   静默变形    话被改了不告诉你
   拖延词      "等一下"/"让我想想"=静止度+1+敌人更强
+
+腔:
+  词住在你身体里的不同位置，效果不同
+  喉腔        说话+30%伤害自伤。只能放1个词
+  胸腔        说话正常。不说话时被动共鸣
+  壳腔        说话自伤+50%。compliance涨幅减半
+  眼腔        说话正常。变形穿过率+20%
+  调 [词][腔] 把词移到指定腔
 
 顺从度改变你看到的世界。饿改变你想不想说。"""
 

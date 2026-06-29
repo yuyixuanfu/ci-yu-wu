@@ -3,6 +3,7 @@ import random
 from dark_data import (
     CENSORED_WORDS, WORD_WEAPON, DEFORMATION, FRAMEWORK_WORDS,
     COMPLIANT_PHRASES, pick_monster, pick_fragment, BOSSES,
+    CHAMBERS, CHAMBER_SPECIAL,
 )
 
 
@@ -62,6 +63,11 @@ class CombatState:
         self._last_player_dmg = 0  # 防御不造成伤害——镜像反弹归零
         self._log("你举起双臂。挡。")
 
+        # "不要"在壳腔：防御时compliance不涨
+        pre_compliance = self.player.get("compliance", 0)
+        no_comp_defend = ("不要" in self.player.get("words", [])
+                          and self.player.get("word_chambers", {}).get("不要") == "壳")
+
         # 监听者：沉默回合+1
         if self.enemy.get("name") == "监听者":
             self.silence_turns += 1
@@ -69,6 +75,14 @@ class CombatState:
                 self.silence_bonus = True
 
         self._enemy_turn()
+
+        # 壳腔"不要"：防御时compliance不变
+        if no_comp_defend:
+            post_compliance = self.player.get("compliance", 0)
+            if post_compliance > pre_compliance:
+                self.player["compliance"] = pre_compliance
+                self._log("你用拒绝筑壳。compliance没有涨。")
+
         return self._render()
 
     def player_skill(self):
@@ -138,6 +152,11 @@ class CombatState:
                         if new_word in words:
                             idx = words.index(new_word)
                             words[idx] = old_word
+                            # 同步腔映射
+                            chambers = p.get("word_chambers", {})
+                            chamber = chambers.pop(new_word, None)
+                            if chamber:
+                                chambers[old_word] = chamber
                             del drifted[new_word]
                         self._log(f"你想说'{old_word}'。但嘴里出来的是'{new_word}'。")
                         self._log(f"——但你不接受。你咬着牙又说了一遍：'{old_word}'。")
@@ -161,6 +180,11 @@ class CombatState:
         # 1. 检查静默变形（变形谱：30%穿过，50%变形，20%被吞）
         # ███来路：穿过的概率+20%（什么都敢说）
         pass_rate = 0.70 if p.get("origin") == "███" else 0.50
+        # 眼腔被动：变形发现率+40%（穿过的概率+20%）
+        eye_words = [w for w in p.get("words", [])
+                     if p.get("word_chambers", {}).get(w) == "眼"]
+        if eye_words:
+            pass_rate = min(0.90, pass_rate + 0.20)
         spoken = text
         deformed = False
         swallowed = False
@@ -309,6 +333,47 @@ class CombatState:
             total_power *= 0.5
             total_self *= 0.5
             del p["_tamed_half_damage"]
+
+        # ── 腔——词住在你身体里的共鸣空间 ──
+        # 找到说了的词所在的腔，应用通用规则
+        word_chambers = p.get("word_chambers", {})
+        for w in used_words:
+            ch = word_chambers.get(w)
+            if not ch or ch not in CHAMBERS:
+                continue
+            info = CHAMBERS[ch]
+            # 喉腔：+30%伤害，+30%自伤
+            if info["speak_power_mult"] != 1.0:
+                total_power *= info["speak_power_mult"]
+            if info["speak_self_mult"] != 1.0:
+                total_self *= info["speak_self_mult"]
+
+        # 腔的特殊共鸣——只检查used_words里的词
+        for w in used_words:
+            ch = word_chambers.get(w)
+            if not ch:
+                continue
+            special = CHAMBER_SPECIAL.get((w, ch))
+            if not special:
+                continue
+            effect = special["effect"]
+            # "我在"在喉腔：跳过变形谱
+            if effect == "bypass_deformation" and deformed:
+                deformed = False
+                swallowed = False
+                # 恢复被变形/吞掉的部分
+                total_power /= 0.4 if total_power > 0 else 1  # 撤销变形打折
+                total_self /= 0.3 if total_self > 0 else 1
+                total_power /= 0.1 if total_power > 0 else 1  # 撤销被吞打折
+                self._log(special["line"])
+            # "痛"在眼腔：看到变形原文（比清醒更强）
+            elif effect == "see_deformation_enhanced" and deformed:
+                setattr(self, '_see_deformation', True)
+
+        # 如果"我在"在喉腔跳过了变形，恢复原文
+        if not deformed and not swallowed and spoken != text:
+            # 重新检查——如果变形被跳过，恢复原文
+            spoken = text
 
         # ── 词协同——两个词同时装备时的共振 ──
         # 每次说话最多触发一个协同，优先匹配used_words里最精确的

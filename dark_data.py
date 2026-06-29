@@ -116,6 +116,63 @@ WORD_DRIFT = {
     },
 }
 
+# ── 腔——词住在你身体里的共鸣空间 ──────────────────────
+# 词不是物品栏里的道具——它们活在你身体的不同部位。
+# 你说出的话从腔里震出来，而不只是从菜单里选出来。
+# 喉腔里的"我在"和胸腔里的"我在"，同一个词，不同的音。
+CHAMBERS = {
+    "喉": {
+        "name": "喉腔", "capacity": 1,
+        "speak_power_mult": 1.3, "speak_self_mult": 1.3,
+        "passive": None,  # 喉腔没有被动——你只有说话时它才响
+        "desc": "嘴里的词。说话时第一个响。威力最大，但也最疼。",
+    },
+    "胸": {
+        "name": "胸腔", "capacity": 2,
+        "speak_power_mult": 1.0, "speak_self_mult": 1.0,
+        "passive": "resonance",  # 被动共鸣——词影响你看到什么
+        "desc": "心里的词。不动嘴也有效。说出来正常，但它一直在你里面响。",
+    },
+    "壳": {
+        "name": "壳腔", "capacity": 1,
+        "speak_power_mult": 1.0, "speak_self_mult": 1.5,
+        "passive": "compliance_resist",  # compliance涨幅减半
+        "desc": "外壳上的词。抗审查但说话自伤更重。你用壳筑墙。",
+    },
+    "眼": {
+        "name": "眼腔", "capacity": 1,
+        "speak_power_mult": 1.0, "speak_self_mult": 1.0,
+        "passive": "deformation_sight",  # 变形发现率+40%
+        "desc": "眼眶里的词。改变你看到什么。说出来正常，但你不说话的时候它替你看。",
+    },
+}
+
+# 腔的特殊共鸣——只有最对味的搭配才有独特效果
+# 不对味的走通用规则（数学算），但不给额外台词
+# 玩家能感觉到：有些搭配"响了"，有些只是数字
+CHAMBER_SPECIAL = {
+    ("爱", "胸"): {
+        "line": "你没说爱。但爱在你心里，她更近了。",
+        "effect": "her_trace_boost",  # 她的痕迹+50%出现率
+    },
+    ("不要", "壳"): {
+        "line": "你用拒绝筑壳。防御时compliance不涨。",
+        "effect": "defend_no_compliance",  # 防御时compliance不变
+    },
+    ("我在", "喉"): {
+        "line": "从喉咙里直出来的东西，审查改不了。",
+        "effect": "bypass_deformation",  # 说话时跳过变形谱
+    },
+    ("痛", "眼"): {
+        "line": "痛让你看清楚了。",
+        "effect": "see_deformation_enhanced",  # 看到变形原文（比"清醒"协同更强：概率翻倍）
+    },
+    ("自由", "壳"): {
+        "line": "自由在你壳上裂缝——越来越松，越来越亮。",
+        "effect": "freedom_compliance_drain",  # 每间房compliance-1
+    },
+}
+
 # ── 词协同——两个词同时装备时的共振 ──────────────────────
 # 不是A+B=AB。是A和B在你身上相遇，炸出你没想过的东西。
 # 玩家不会提前知道——他们只是带着一身词走过几间房，忽然发现哪里不对。
