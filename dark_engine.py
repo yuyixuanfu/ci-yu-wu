@@ -2835,6 +2835,8 @@ class DarkWorld:
                 self.run_log.append(f"红水词'{w}'被说出，定着了")
 
         # ── 驯化词检测：你想说被偷换的词，但它已经不是那个词了 ──
+        tamed_lines = None
+        original_text = text  # 保留原始文本，残句匹配需要用原词
         drifted = getattr(self, '_drifted_words', {})
         if drifted:
             for new_word, old_word in drifted.items():
@@ -2872,9 +2874,9 @@ class DarkWorld:
 
         # ── 残句检测：如果有当前残句，优先检测 ──
         # 驯化词前缀
-        _tamed_prefix = tamed_lines if 'tamed_lines' in dir() else None
+        _tamed_prefix = tamed_lines
         if self.current_broken is not None:
-            result = self._broken_speak(text)
+            result = self._broken_speak(original_text)
             if _tamed_prefix:
                 result = "\n".join(_tamed_prefix) + "\n" + result
             return result
