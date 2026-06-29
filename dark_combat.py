@@ -180,6 +180,9 @@ class CombatState:
             if compliance >= threshold:
                 for original, soft in replacements.items():
                     if original in text and original in p.get("words", []):
+                        # 心位词不被自我替换
+                        if original in p.get("heart_slots", []):
+                            continue
                         chance = min(0.8, (compliance - threshold + 1) * 0.15)
                         if random.random() < chance:
                             text = text.replace(original, soft)
@@ -214,6 +217,10 @@ class CombatState:
         swallowed = False
         for original, replacement in DEFORMATION.items():
             if original in text:
+                # 心位词不能被变形
+                if original in p.get("heart_slots", []):
+                    self.word_fate[original] = "heart_protected"
+                    continue
                 roll = random.random()
                 if roll < pass_rate:
                     # 穿过去！不变形！
@@ -487,6 +494,21 @@ class CombatState:
             total_power *= 0.6
             self._log("你不太确定自己能不能说这个。")
 
+        # ── 变形加成 ──
+        transform_power = p.get("transform_power_mult", 1.0)
+        transform_self = p.get("transform_self_harm_mult", 1.0)
+        if transform_power != 1.0:
+            total_power *= transform_power
+        if transform_self != 1.0:
+            total_self *= transform_self
+
+        # ── 魔鬼交易自伤×3 ──
+        devil_mults = p.get("_devil_self_harm_mult", {})
+        for w in used_words:
+            if w in devil_mults:
+                total_self *= devil_mults[w]
+                self._log(f"'{w}'烫手。塔给的词。自伤×{devil_mults[w]}。")
+
         # 饿影响——越想要打得越狠，也伤越深
         hunger = p.get("hunger", 5)
         if hunger > 10:
@@ -535,7 +557,9 @@ class CombatState:
         # 遗忘者：随机封一个词（最多封一半）
         if e.get("name") == "遗忘者" and random.random() < 0.3:
             max_seal = max(1, len(p.get("words", [])) // 2)
-            sealable = [w for w in p.get("words", []) if w not in self.skills_sealed]
+            # 心位词不能被封
+            sealable = [w for w in p.get("words", [])
+                        if w not in self.skills_sealed and w not in p.get("heart_slots", [])]
             if sealable and len(self.skills_sealed) < max_seal:
                 sealed = random.choice(sealable)
                 self.skills_sealed.append(sealed)

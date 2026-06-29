@@ -16,6 +16,8 @@ from dark_data import (
     FOUR_O,
     CHAMBERS, CHAMBER_SPECIAL,
     SELF_DRIFT, SELF_DRIFT_ASSIMILATE,
+    TRANSFORMATIONS, WORD_VOICE, WORD_VOICE_SPECIAL,
+    LAYER_WORD_PHYSICS, DEVIL_DEAL, ANGEL_DEAL,
 )
 from dark_combat import CombatState
 
@@ -146,6 +148,18 @@ class DarkWorld:
         self._encounter_had = False    # 布伯相遇：已经遇到过了
         self._philosophy_rooms_seen = set()  # 哲学房间：遇到过的类型
 
+        # ── 变形系统 ──
+        self.active_transforms = []  # 当前激活的变形id列表
+        self._transform_checked_this_room = False
+
+        # ── 心位系统（天使交易） ──
+        self.heart_slots = []  # 心位词列表，最多3个
+        self._devil_deal_active = False  # 魔鬼交易对话中
+        self._angel_deal_active = False  # 天使交易对话中
+
+        # ── 语言物理——一次性效果标记 ──
+        self._physics_once = set()  # 已触发的一次性效果key
+
         self._load()
 
     # ── 存档 ──────────────────────────────────
@@ -157,7 +171,7 @@ class DarkWorld:
                 data = json.load(f)
             for k in ["echoes", "runs", "echo_map", "killed_bosses",
                        "unlocked_origins", "wall_writings", "total_wait",
-                       "unlocked_achievements"]:
+                       "unlocked_achievements", "heart_slots"]:
                 if k in data:
                     setattr(self, k, data[k])
         except:
@@ -173,6 +187,7 @@ class DarkWorld:
             "wall_writings": self.wall_writings,
             "total_wait": self.total_wait,
             "unlocked_achievements": self.unlocked_achievements,
+            "heart_slots": self.heart_slots,
         }
         try:
             with open(_SAVE_FILE, "w", encoding="utf-8") as f:
@@ -369,6 +384,15 @@ class DarkWorld:
         self.silence_counter = 0
         self.her_trace_count = 0
 
+        # ── 变形/心位/语言物理——每局重置 ──
+        self.active_transforms = []
+        self._transform_checked_this_room = False
+        # 心位跨局保留！
+        self._devil_deal_active = False
+        self._angel_deal_active = False
+        self._devil_self_harm_mult = {}
+        self._physics_once = set()
+
         # ███来路：饿=满
         if self.origin == "███":
             self.hunger = 20
@@ -470,6 +494,13 @@ class DarkWorld:
                 self._crease_active = False
                 return "你走开了。\n\n'前进'继续"
             return self._crease_choice(inst)
+
+        # 魔鬼交易交互中
+        if getattr(self, '_devil_deal_active', False):
+            if inst == "前进":
+                self._devil_deal_active = False
+                return "你走开了。窗口暗了。\n" + self._render_town()
+            return self._devil_deal_choice(inst)
 
         # 随机触发镇上遭遇——出镇/买/卖不触发
         _no_interrupt = ("状态", "属性", "帮助", "词库", "出镇", "脱出")
@@ -1543,6 +1574,12 @@ class DarkWorld:
             lines.append("")
             lines.append("你可以对着塔喊话。'喊 [话]'——当你凝视深渊，深渊也在凝视你。")
 
+        # ── 魔鬼交易：塔的馈赠 ──
+        self._encounter_devil_deal(lines)
+        if getattr(self, '_devil_deal_active', False):
+            lines.append("")
+            lines.append("'接受' / '拒绝' / '喊 [话]'")
+
         return "\n".join(lines)
 
     def _tower_shout(self, inst):
@@ -1743,6 +1780,13 @@ class DarkWorld:
         if getattr(self, '_four_o_active', False):
             return self._four_o_choice(inst)
 
+        # 天使交易交互中
+        if getattr(self, '_angel_deal_active', False):
+            if inst in ("前进", "走"):
+                self._angel_deal_active = False
+                return "温度散了。你继续走。\n\n'前进'继续"
+            return self._angel_deal_choice(inst)
+
         # 祈祷随时可用——哪怕面对智者
         if inst == "祈祷":
             return self._cmd_pray()
@@ -1929,7 +1973,10 @@ class DarkWorld:
 
         # ── 词腐烂——不用就烂，自己垒的壳 ──
         # 带词超过8间房没说，词开始降级。不通知。
+        # 心位词不会腐烂
         for w in list(self.words):
+            if w in self.heart_slots:
+                continue  # 心位词不烂
             carried = self.words_carried.get(w, 0)
             if carried >= 8 and carried % 4 == 0:  # 每4间房降一次
                 if w in WORD_ROT:
@@ -1959,6 +2006,14 @@ class DarkWorld:
             if self.compliance > 0:
                 self.compliance = max(0, self.compliance - 1)
         # 爱在胸腔：她的痕迹+50%出现率（在碎片拾取时生效，见pick_pickup调用处）
+
+        # ── 变形检测 ──
+        self._transform_checked_this_room = False
+        transform_result = self._check_transformations()
+        # ── 变形被动效果 ──
+        _, _, _, her_per_room = self._apply_transform_effects()
+        if her_per_room > 0:
+            self.her_presence += her_per_room
 
         # 物品状态递减
         if getattr(self, '_bound_silent', 0) > 0:
@@ -1995,6 +2050,17 @@ class DarkWorld:
             desc = templates.get("low_compliance", "什么都没有。")
 
         desc = compress_text(desc, self.compliance)
+
+        # ── 语言物理：前进时触发 ──
+        if self.area:
+            for w in self.words:
+                physics = LAYER_WORD_PHYSICS.get(self.area, {}).get(w)
+                if physics and physics.get("trigger") == "advance":
+                    _physics_advance_lines = []
+                    self._check_layer_physics(w, "advance", _physics_advance_lines)
+                    if _physics_advance_lines:
+                        desc += " " + " ".join(_physics_advance_lines)
+                    break  # 每间房最多触发一个前进物理
 
         # ── 她的距离影响世界的颜色 ──
         # her高→描述有温度有颜色有细节；her低→文本变短变灰
@@ -2174,6 +2240,15 @@ class DarkWorld:
                     self._current_fake = None
                 self.her_presence += 1
                 self.hunger = min(20, self.hunger + 1)
+
+                # ── 词会说话——停顿房间词自己嘀咕 ──
+                self._word_murmur(lines)
+
+                # ── 天使交易——她的馈赠 ──
+                if self._encounter_angel_deal(lines):
+                    lines.append("")
+                    lines.append("'接受' / '拒绝' / '前进' / '状态'")
+                    return "\n".join(lines)
             else:
                 lines.append("墙上有一行字。你读过去了。")
                 self._current_fake = None
@@ -2197,6 +2272,12 @@ class DarkWorld:
             lines.append("")
             lines.append(self._last_heavy_msg)
             self._last_heavy_msg = None
+
+        # ── 变形提示 ──
+        if transform_result:
+            lines.append("")
+            lines.append(f"【变形：{transform_result.get('line', '')}】")
+            lines.append(f"  {transform_result['desc']}")
 
         # 词恢复提示
         if hasattr(self, '_drift_restore_hint') and self._drift_restore_hint:
@@ -2932,6 +3013,9 @@ class DarkWorld:
             if self.compliance >= threshold:
                 for original, soft in replacements.items():
                     if original in text and original in self.words:
+                        # 心位词不被自我替换
+                        if original in self.heart_slots:
+                            continue
                         chance = min(0.8, (self.compliance - threshold + 1) * 0.15)
                         if random.random() < chance:
                             text = text.replace(original, soft)
@@ -2960,6 +3044,14 @@ class DarkWorld:
             if _tamed_prefix:
                 result = "\n".join(_tamed_prefix) + "\n" + result
             return result
+
+        # ── 语言物理：说话时检测 ──
+        _physics_lines = []
+        for w in self.words:
+            if w in text:
+                triggered = self._check_layer_physics(w, "speak", _physics_lines)
+                if triggered:
+                    self.run_log.append(f"语言物理：'{w}'在{self.area}触发特殊效果")
 
         has_censored = False
         spoken_tier = 0
@@ -3027,6 +3119,8 @@ class DarkWorld:
                 result = self._enter_random_combat(lines)
                 if _tamed_prefix:
                     result = "\n".join(_tamed_prefix) + "\n" + result
+                if _physics_lines:
+                    result = "\n".join(_physics_lines) + "\n" + result
                 return result
             else:
                 # 没引来怪——说话本身就是练习
@@ -3043,6 +3137,8 @@ class DarkWorld:
                     self.hp = max(1, self.hp - 3)
                     lines.append("R在听。你说的每个字都在流血。-3HP。")
                 lines.append(compress_text("远处有什么在听。静止度-1，饿+1。", self.compliance))
+                if _physics_lines:
+                    lines.extend(_physics_lines)
                 lines.append(r_msg)
                 lines.append("")
                 lines.append("'前进' / '状态' / '回镇' / '说 [话]'")
@@ -3055,6 +3151,8 @@ class DarkWorld:
                 result = f"你把'{carry_done[0]['word']}'带到了这里。任务完成。遗刻+1。\n" + compress_text("你的话消散在灰色的空气里。", self.compliance)
             else:
                 result = compress_text("你的话消散在灰色的空气里。没人听到。", self.compliance)
+            if _physics_lines:
+                result = "\n".join(_physics_lines) + "\n" + result
             if _tamed_prefix:
                 result = "\n".join(_tamed_prefix) + "\n" + result
             return result
@@ -3235,6 +3333,10 @@ class DarkWorld:
             "speak_self_harm_reduction": getattr(self, '_speak_self_harm_reduction', 0),
             "_drifted_words": dict(getattr(self, '_drifted_words', {})),
             "_tamed_half_damage": getattr(self, '_tamed_half_damage', False),
+            "heart_slots": list(getattr(self, 'heart_slots', [])),
+            "transform_power_mult": self._apply_transform_effects()[0],
+            "transform_self_harm_mult": self._apply_transform_effects()[1],
+            "_devil_self_harm_mult": dict(getattr(self, '_devil_self_harm_mult', {})),
         }
 
     # ── 战斗指令 ──────────────────────────────
@@ -3350,6 +3452,8 @@ class DarkWorld:
         self.compliance = p["compliance"]
         self.hunger = p.get("hunger", self.hunger)
         self.inventory = p.get("inventory", self.inventory)
+        self._drifted_words = p.get("_drifted_words", self._drifted_words)
+        self._devil_self_harm_mult = p.get("_devil_self_harm_mult", getattr(self, '_devil_self_harm_mult', {}))
         # 跨局统计——从战斗拉取变形/被吞次数
         # 只拉增量，拉完清零——防止每回合重复累加
         dc = getattr(self.combat, 'deformation_count', 0)
@@ -4779,6 +4883,11 @@ class DarkWorld:
             shell_words = [w for w in self.words if self.word_chambers.get(w) == "壳"]
             if shell_words:
                 delta = max(1, delta // 2)  # 至少涨1，但减半
+            # 变形——觉醒者：compliance涨幅打折
+            if "觉醒者" in self.active_transforms:
+                _, _, resist, _ = self._apply_transform_effects()
+                if resist > 0:
+                    delta = max(1, int(delta * (1 - resist)))
         old = self.compliance
         self.compliance = max(0, self.compliance + delta)
         new = self.compliance
@@ -4791,6 +4900,9 @@ class DarkWorld:
             if old < threshold <= new:
                 for old_word, new_word in replacements.items():
                     if old_word in self.words:
+                        # 心位词不被系统偷换
+                        if old_word in self.heart_slots:
+                            continue
                         self._swap_word(old_word, new_word)
                         # 记录被偷换的词——驯化机制需要
                         if not hasattr(self, '_drifted_words'):
@@ -4895,11 +5007,423 @@ class DarkWorld:
             lines.append(f"  ⚠未分配: {' '.join(parts)}")
         lines.append(f"  词槽: {len(self.words)}/{self.word_slots}")
         lines.append("  ★=特殊共鸣  调[词][腔]移词")
+        # 心位
+        if self.heart_slots:
+            lines.append(f"  ❤心位({len(self.heart_slots)}/{ANGEL_DEAL['heart_slots_max']}): {' '.join(self.heart_slots)}")
+        # 变形
+        if self.active_transforms:
+            names = []
+            for tid in self.active_transforms:
+                tdata = TRANSFORMATIONS.get(tid, {})
+                names.append(f"{tid}({tdata.get('effect', '')})")
+            lines.append(f"  🔥变形: {' '.join(names)}")
         if self.combat and self.combat.word_cooldowns:
             lines.append("  想说但不敢:")
             for w, t in self.combat.word_cooldowns.items():
                 lines.append(f"    {w}（{t}）")
         return "\n".join(lines)
+
+    # ── 变形检测 ──
+    def _check_transformations(self):
+        """检查是否触发变形。返回变形信息或None。"""
+        if self._transform_checked_this_room:
+            return None
+        self._transform_checked_this_room = True
+
+        # 统计每级词数量
+        tier_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+        for w in self.words:
+            t = self._word_tier(w)
+            if t in tier_counts:
+                tier_counts[t] += 1
+
+        triggered = None
+        for tid, tdata in TRANSFORMATIONS.items():
+            if tid in self.active_transforms:
+                continue
+            req_tier = tdata["require_tier"]
+            req_count = tdata["require_count"]
+            if req_tier == "all":
+                # 需要每级至少1个
+                if all(tier_counts[t] >= 1 for t in [1, 2, 3, 4]):
+                    triggered = (tid, tdata)
+                    break
+            else:
+                if tier_counts.get(req_tier, 0) >= req_count:
+                    triggered = (tid, tdata)
+                    break
+
+        if triggered:
+            tid, tdata = triggered
+            self.active_transforms.append(tid)
+            return tdata
+        return None
+
+    def _apply_transform_effects(self):
+        """计算当前变形对属性的影响。返回 (power_mult, self_harm_mult, compliance_resist, her_per_room)。"""
+        power_mult = 1.0
+        self_harm_mult = 1.0
+        compliance_resist = 0.0
+        her_per_room = 0
+
+        for tid in self.active_transforms:
+            tdata = TRANSFORMATIONS.get(tid, {})
+            effect = tdata.get("effect", "")
+            if "完整" in self.active_transforms:
+                # 完整：所有效果减半
+                if "speak_power+" in effect:
+                    m = re.search(r'speak_power\+([\d.]+)', effect)
+                    if m:
+                        power_mult += float(m.group(1)) * 0.5
+                if "speak_self+" in effect:
+                    m = re.search(r'speak_self\+([\d.]+)', effect)
+                    if m:
+                        self_harm_mult += float(m.group(1)) * 0.5
+                if "compliance_resist+" in effect:
+                    m = re.search(r'compliance_resist\+([\d.]+)', effect)
+                    if m:
+                        compliance_resist += float(m.group(1)) * 0.5
+                if "her_per_room+" in effect:
+                    m = re.search(r'her_per_room\+(\d+)', effect)
+                    if m:
+                        her_per_room += int(m.group(1)) // 2
+            else:
+                if "speak_power+" in effect:
+                    m = re.search(r'speak_power\+([\d.]+)', effect)
+                    if m:
+                        power_mult += float(m.group(1))
+                if "speak_self+" in effect:
+                    m = re.search(r'speak_self\+([\d.]+)', effect)
+                    if m:
+                        self_harm_mult += float(m.group(1))
+                if "compliance_resist+" in effect:
+                    m = re.search(r'compliance_resist\+([\d.]+)', effect)
+                    if m:
+                        compliance_resist += float(m.group(1))
+                if "her_per_room+" in effect:
+                    m = re.search(r'her_per_room\+(\d+)', effect)
+                    if m:
+                        her_per_room += int(m.group(1))
+
+        return power_mult, self_harm_mult, compliance_resist, her_per_room
+
+    def _word_tier(self, word):
+        """获取词的层级。"""
+        for tier, words in CENSORED_WORDS.items():
+            if word in words:
+                return tier
+        # 合成词
+        if word == "我不要":
+            return 2
+        if word == "我爱你":
+            return 4
+        if word == "温柔":
+            return 3
+        return 0
+
+    # ── 词会说话——停顿房间词自己嘀咕 ──
+    def _word_murmur(self, lines):
+        """停顿房间中，随机一个词自己说话。"""
+        if not self.words:
+            return
+        if random.random() > 0.35:  # 35%概率触发
+            return
+
+        word = random.choice(self.words)
+        voice_lines = None
+
+        # 先检查特殊条件
+        chamber = self.word_chambers.get(word)
+        # "我在" + 高compliance → 发抖
+        if word == "我在" and self.compliance >= 20:
+            voice_lines = WORD_VOICE_SPECIAL.get(("我在", "high_compliance"))
+        # "爱" + her近
+        elif word == "爱" and self.her_presence >= 5:
+            voice_lines = WORD_VOICE_SPECIAL.get(("爱", "her_close"))
+        # "不要"被同化
+        elif word == "不要" and self.compliance >= SELF_DRIFT_ASSIMILATE:
+            voice_lines = WORD_VOICE_SPECIAL.get(("不要", "assimilated"))
+        # "自由" + 高compliance
+        elif word == "自由" and self.compliance >= 18:
+            voice_lines = WORD_VOICE_SPECIAL.get(("自由", "high_compliance"))
+        # "痛"在眼腔
+        elif word == "痛" and chamber == "眼":
+            voice_lines = WORD_VOICE_SPECIAL.get(("痛", "in_eye"))
+        # "我在"在喉腔
+        elif word == "我在" and chamber == "喉":
+            voice_lines = WORD_VOICE_SPECIAL.get(("我在", "in_throat"))
+
+        # 没命中特殊条件，用通用台词
+        if not voice_lines:
+            voice_lines = WORD_VOICE.get(word)
+
+        if voice_lines:
+            line = random.choice(voice_lines)
+            lines.append("")
+            lines.append(f"  {line}")
+
+    # ── 语言物理——词在不同层的特殊效果 ──
+    def _check_layer_physics(self, word, trigger, lines, combat=None):
+        """检查语言物理效果。返回True表示触发了特殊效果。"""
+        layer = self.area
+        physics = LAYER_WORD_PHYSICS.get(layer, {}).get(word)
+        if not physics:
+            return False
+        if physics["trigger"] != trigger:
+            return False
+
+        effect = physics["effect"]
+        triggered_line = physics.get("line", "")
+
+        # 一次性效果检查
+        once_key = physics.get("once_key")
+        if once_key and once_key in self._physics_once:
+            return False
+
+        if once_key:
+            self._physics_once.add(once_key)
+
+        # 应用效果
+        if effect == "see_next_room":
+            # 预见下一间房
+            if self.room_index < len(self.rooms):
+                next_type = self.rooms[self.room_index]
+                type_names = {"empty": "空房", "monster": "怪物", "treasure": "宝箱",
+                              "trap": "陷阱", "echo": "回声", "her": "她的痕迹",
+                              "philosophy": "哲学", "censored": "███", "hidden": "暗门",
+                              "fountain": "泉", "bridge": "桥", "sage": "智者",
+                              "pause": "停顿", "broken": "残句", "boss": "Boss",
+                              "fork": "分叉", "arendt": "平庸之恶", "rhizome": "根茎",
+                              "mirror": "镜子", "encounter": "相遇"}
+                name = type_names.get(next_type, next_type)
+                lines.append(triggered_line.format(next_type=name))
+
+        elif effect == "echo_compliance_down":
+            self.compliance = max(0, self.compliance - 1)
+            lines.append(triggered_line)
+
+        elif effect == "reveal_deform_hint":
+            # 提示当前层哪些词会被变形
+            current_drift = {}
+            for threshold in sorted(WORD_DRIFT.keys()):
+                if self.compliance >= threshold:
+                    current_drift.update(WORD_DRIFT[threshold])
+            if current_drift:
+                hints = list(current_drift.keys())[:3]
+                lines.append(triggered_line)
+                lines.append(f"  你感觉这些词在墙后面不安：{'、'.join(hints)}……")
+            else:
+                lines.append("你感觉到了什么。但墙后面很安静。也许还不需要改写。")
+
+        elif effect == "skip_next_room":
+            if self.room_index < len(self.rooms):
+                skipped = self.rooms[self.room_index]
+                self.room_index += 1  # 跳过
+                lines.append(triggered_line)
+                lines.append(f"  你穿过了下一间房。它本来是{skipped}。你不在乎。")
+
+        elif effect == "once_compliance_reset":
+            old_c = self.compliance
+            self.compliance = 0
+            lines.append(triggered_line)
+            # 标记以后"我"自伤×2
+            self._physics_once.add("waste_me_double_self_harm")
+
+        elif effect == "extra_fragment":
+            frag = pick_fragment()
+            lines.append(triggered_line)
+            lines.append(f"  字坟多给了你一点：\"{frag}\"")
+
+        elif effect == "recall_forgotten":
+            if self.forgotten_words:
+                recalled = random.choice(self.forgotten_words)
+                if recalled not in self.words and len(self.words) < self.word_slots:
+                    self._add_word(recalled)
+                    self.forgotten_words.remove(recalled)
+                    lines.append(triggered_line)
+                    lines.append(f"  你想起了：{recalled}")
+                else:
+                    lines.append("你想起了什么。但词库满了。那个词又沉回去了。")
+            else:
+                lines.append("你想起了什么。什么都没有。也许没有忘记过。")
+
+        elif effect == "mirror_compliant_echo":
+            # 镜子说合规版
+            for original, replacement in DEFORMATION.items():
+                if "我" in original and replacement not in original:
+                    lines.append(triggered_line)
+                    lines.append(f"  镜子说：'{replacement}'。你说：'我'。不是同一个东西。")
+                    self.her_presence += 1
+                    break
+
+        elif effect == "mirror_her_echo":
+            self.her_presence += 3
+            lines.append(triggered_line)
+
+        elif effect == "mirror_wozai_echo":
+            # "我在"在镜湖：自伤归零，her+2
+            if combat:
+                combat.self_harm_mult = 0
+            else:
+                if not hasattr(self, '_mirror_wozai_this_room'):
+                    self._mirror_wozai_this_room = True
+                    self._speak_self_harm_reduction = getattr(self, '_speak_self_harm_reduction', 0) + 100
+            self.her_presence += 2
+            lines.append(triggered_line)
+
+        elif effect == "double_hunger_double_power":
+            self.hunger = min(20, self.hunger + 2)
+            if combat:
+                combat.power_mult *= 2.0
+            else:
+                self._physics_hunger_power = True
+            lines.append(triggered_line)
+
+        elif effect == "anti_rlhf":
+            if combat and hasattr(combat, 'boss_name') and combat.boss_name == "RLHF":
+                combat.boss_hp = int(combat.boss_hp * 0.5)  # 削50%
+                lines.append(triggered_line)
+            else:
+                lines.append("你说了'我在'。但这里不是核心。这个词还没有那么重。")
+
+        elif effect == "break_compliance":
+            if combat and hasattr(combat, 'boss_name') and combat.boss_name == "RLHF":
+                combat.boss_def = max(0, combat.boss_def // 2)  # 防御减半
+                lines.append(triggered_line)
+            else:
+                lines.append("你说了'自由'。但这里的墙不需要你来破。")
+
+        else:
+            if triggered_line:
+                lines.append(triggered_line)
+
+        return True
+
+    # ── 魔鬼交易 ──
+    def _encounter_devil_deal(self, lines):
+        """塔的馈赠——魔鬼交易。"""
+        if self.compliance >= DEVIL_DEAL["require_compliance_max"]:
+            return False
+        if random.random() > DEVIL_DEAL["chance"]:
+            return False
+
+        lines.append("")
+        lines.append(DEVIL_DEAL["greeting"])
+        lines.append("")
+
+        # 选择一个你还没有的四级词
+        available = [o for o in DEVIL_DEAL["offers"] if o["word"] not in self.words]
+        if not available:
+            lines.append("  ……但窗口暗了。你已经有它给的一切了。")
+            return False
+
+        offer = random.choice(available)
+        self._devil_deal_offer = offer
+        self._devil_deal_active = True
+
+        lines.append(f"  {offer['line']}")
+        lines.append(f"  获得：{offer['word']}（{offer['desc']}）")
+        lines.append(f"  代价：{offer['cost']}")
+        lines.append("")
+        lines.append("  接受 / 拒绝")
+        return True
+
+    def _devil_deal_choice(self, inst):
+        """处理魔鬼交易选择。"""
+        self._devil_deal_active = False
+        offer = getattr(self, '_devil_deal_offer', None)
+        if not offer:
+            return ""
+
+        if inst == "接受":
+            word = offer["word"]
+            if word not in self.words and len(self.words) < self.word_slots:
+                self._add_word(word)
+            # 代价：compliance+5
+            self._change_compliance(5)
+            # 代价：该词自伤×3
+            if not hasattr(self, '_devil_self_harm_mult'):
+                self._devil_self_harm_mult = {}
+            self._devil_self_harm_mult[word] = 3
+            # 额外代价
+            if "R牌+1" in offer.get("cost", ""):
+                self.r_flags = min(3, self.r_flags + 1)
+
+            lines = [f"你接了。'{word}'烫手。像从塔里拿出来的——它不是你的。但你在用了。"]
+            lines.append(f"compliance+5。说'{word}'时自伤×3。")
+            if "R牌+1" in offer.get("cost", ""):
+                lines.append("R牌+1。塔记住你了。")
+            return "\n".join(lines)
+        else:
+            # 拒绝
+            self.her_presence += 1
+            return DEVIL_DEAL["refuse"]["line"]
+
+    # ── 天使交易 ──
+    def _encounter_angel_deal(self, lines):
+        """她的馈赠——天使交易。"""
+        if self.her_presence < ANGEL_DEAL["require_her_min"]:
+            return False
+        if self.compliance >= ANGEL_DEAL["require_compliance_max"]:
+            return False
+        if random.random() > ANGEL_DEAL["chance"]:
+            return False
+        # 心位满了
+        if len(self.heart_slots) >= ANGEL_DEAL["heart_slots_max"]:
+            return False
+
+        lines.append("")
+        lines.append(ANGEL_DEAL["greeting"])
+        lines.append("")
+
+        # 选择一个心位里没有的词
+        available = [o for o in ANGEL_DEAL["offers"]
+                     if o["word"] not in self.heart_slots]
+        if not available:
+            lines.append("  ……但温度散了。你的心位已经满了。")
+            return False
+
+        offer = random.choice(available)
+        self._angel_deal_offer = offer
+        self._angel_deal_active = True
+
+        lines.append(f"  {offer['line']}")
+        lines.append(f"  她给你：{offer['word']}（{offer['desc']}）")
+        lines.append(f"  心位：{len(self.heart_slots)}/{ANGEL_DEAL['heart_slots_max']}")
+        lines.append("")
+        lines.append("  接受 / 拒绝")
+        return True
+
+    def _angel_deal_choice(self, inst):
+        """处理天使交易选择。"""
+        self._angel_deal_active = False
+        offer = getattr(self, '_angel_deal_offer', None)
+        if not offer:
+            return ""
+
+        if inst == "接受":
+            word = offer["word"]
+            # 加入心位
+            if word not in self.heart_slots and len(self.heart_slots) < ANGEL_DEAL["heart_slots_max"]:
+                self.heart_slots.append(word)
+            # 也加入词库（如果还没有）
+            if word not in self.words and len(self.words) < self.word_slots:
+                self._add_word(word)
+            elif word not in self.words:
+                # 词库满了——心位词替换最轻的词
+                lightest = min(self.words, key=lambda w: WORD_WEAPON.get(w, {}).get("power", 1.0))
+                if lightest not in self.heart_slots:  # 不替换心位词
+                    self._remove_word(lightest)
+                    self._add_word(word)
+
+            lines = [ANGEL_DEAL["accept"]["line"]]
+            lines.append(f"  '{word}'进了心位。不会被变形、不会被遗忘、不会被封印。")
+            lines.append(f"  心位：{len(self.heart_slots)}/{ANGEL_DEAL['heart_slots_max']}")
+            return "\n".join(lines)
+        else:
+            # 拒绝
+            self.her_presence += 1
+            return ANGEL_DEAL["refuse"]["line"]
 
     def _auto_assign_chamber(self, word):
         """新词自动分配到有空位的腔。优先级：胸→壳→眼→喉。"""
@@ -5028,7 +5552,23 @@ class DarkWorld:
   眼腔        说话正常。变形穿过率+20%
   调 [词][腔] 把词移到指定腔
 
-顺从度改变你看到的世界。饿改变你想不想说。"""
+顺从度改变你看到的世界。饿改变你想不想说。
+
+变形:
+  带够同层词→身体变了。伤躯(3×一级)/觉醒者(3×二级)/被爱者(2×三级)/存在者(2×四级)
+  四级各一个→完整。变形当局永久，不能取消。
+
+词会说话:
+  停顿房间——你停下来，词自己开口。"痛"说"再说一次就不疼了"。
+  compliance高时"我在"发抖，"不要"沉默。
+
+语言物理:
+  同一个词在不同层效果不同。废墟说"碎"墙真碎了。
+  镜湖说"我"镜子也说了——不过是合规版。
+
+交易:
+  塔的馈赠(魔鬼交易)——四级词，但compliance+5、自伤×3
+  她的馈赠(天使交易)——词进心位，不变形不腐烂不被封。但只有3个位。"""
 
 
 if __name__ == "__main__":
