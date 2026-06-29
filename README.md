@@ -462,6 +462,7 @@ def handle_cmd(args):
 | `ciyuwu_server.py` | HTTP API服务。Flask，让任何AI都能玩 |
 | `ciyuwu_blind.py` | 盲玩版。构建后生成 |
 | `build_blind.py` | 构建盲玩版 |
+| `game_wrapper.py` | Operit JSON入口。序列化状态给外部调用 |
 | `tool-schema.json` | 函数调用schema |
 | `README.md` | 本文件 |
 
