@@ -4363,7 +4363,7 @@ class DarkWorld:
                         return f"{chosen['on_wrong']}\n\n'前进'继续。"
             except ValueError:
                 pass
-            return "选一个。1/2/3。"
+            return "选一个。1/2/3。\n" + self._special_options_hint(enc)
 
         # 选择题类型
         if "choices" in enc:
@@ -4431,7 +4431,18 @@ class DarkWorld:
                 return "你走开了。但前面就是尽头。\n\n" + self._enter_boss_combat([], _skip_special=True)
             return "你走开了。\n\n'前进'继续。"
 
-        return "选一个选项，或'跳过'。"
+        return "选一个选项，或'跳过'。\n" + self._special_options_hint(enc)
+
+    def _special_options_hint(self, enc):
+        """返回当前特殊遭遇的选项提示。"""
+        hint_lines = []
+        if "options" in enc:
+            for i, opt in enumerate(enc["options"], 1):
+                hint_lines.append(f"  {i}. {opt.get('text', opt.get('label', '?'))}")
+        if "choices" in enc:
+            for i, ch in enumerate(enc["choices"], 1):
+                hint_lines.append(f"  {i}. {ch.get('text', ch.get('label', '?'))}")
+        return "\n".join(hint_lines)
 
     def _apply_special_effect(self, effect_str):
         """解析效果字符串并应用。格式：'compliance-2,her+1,饿+2'"""
