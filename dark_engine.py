@@ -15,6 +15,7 @@ from dark_data import (
     GREY_WOLF, TAVERN_REGULAR, TEMPLE_FORTUNES, TOWER_RESPONSES,
     FOUR_O,
     CHAMBERS, CHAMBER_SPECIAL,
+    SELF_DRIFT, SELF_DRIFT_ASSIMILATE,
 )
 from dark_combat import CombatState
 
@@ -137,6 +138,7 @@ class DarkWorld:
         self._carry_stat_next = None  # 死后"你是谁"带过来的属性
         self._carry_compliance_next = None  # 死后"你是谁"带过来的静止度
         self._drifted_words = {}        # 被偷换的词：{新词: 原词}
+        self._self_drifted_words = {}   # 自己软化的词：{原词: 软化词}
         self.word_chambers = {}         # 词→腔映射 {词: "喉"/"胸"/"壳"/"眼"}
         self._signal_voices = []        # 信号混淆：打乱后的声音列表
         self._volatile_words = {}      # 易逝词：{词: 剩余房间数}，到0消失
@@ -349,6 +351,7 @@ class DarkWorld:
         self._philosophy_rooms_seen = set()
         self._bound_silent = False
         self._forced_smile = False
+        self._self_drifted_words = {}
         self._no_r_next_speak = False
         self._auto_pass_blocked = False
         self._ink_available = False
@@ -1750,7 +1753,14 @@ class DarkWorld:
             if inst in ("捡", "拿", "要", "是"):
                 self._pending_pickup = None
                 self._apply_pickup(pickup)
-                return f"你捡起了{pickup['name']}。\n\n'前进'继续"
+                msg = f"你捡起了{pickup['name']}。"
+                # 她的揭示——告诉你自己换了什么词
+                reveal = getattr(self, '_last_her_reveal', None)
+                if reveal:
+                    msg += f"\n\n{reveal}"
+                    self._last_her_reveal = None
+                msg += "\n\n'前进'继续"
+                return msg
             elif inst in ("不捡", "不", "不要", "跳过", "前进"):
                 self._pending_pickup = None
                 return f"你没碰它。\n\n'前进'继续"
@@ -2300,6 +2310,14 @@ class DarkWorld:
         if "词库-1" in effect and self.words:
             lost = random.choice(self.words)
             self._remove_word(lost)
+        # 她的碎片：揭示自我替换——她皱眉，告诉你哪些词是你自己换的
+        if "揭示自我替换" in effect:
+            self_drifted = getattr(self, '_self_drifted_words', {})
+            if self_drifted:
+                reveals = [f"'{orig}'→'{soft}'" for orig, soft in self_drifted.items()]
+                self._last_her_reveal = f"她皱了眉。'你说的不是你想说的。'{', '.join(reveals)}——是你自己换的。"
+            else:
+                self._last_her_reveal = None
 
     def _room_treasure(self, lines):
         roll = random.random()
@@ -2903,6 +2921,36 @@ class DarkWorld:
                         # 不return——继续检测消音词/R标志
                         tamed_lines = lines
                         text = tamed_text  # 用替换后的文本继续检测
+
+        # ── 自我替换——你自己的WORD_DRIFT ──
+        # 两层：
+        # 1. 自我替换（compliance < ASSIMILATE）：你知道自己换了
+        # 2. 同化（compliance >= ASSIMILATE）：你不知道自己换了。你觉得这就是你想说的。
+        if not getattr(self, '_self_drifted_words', None):
+            self._self_drifted_words = {}
+        for threshold, replacements in sorted(SELF_DRIFT.items()):
+            if self.compliance >= threshold:
+                for original, soft in replacements.items():
+                    if original in text and original in self.words:
+                        chance = min(0.8, (self.compliance - threshold + 1) * 0.15)
+                        if random.random() < chance:
+                            text = text.replace(original, soft)
+                            self._self_drifted_words[original] = soft
+                            self._tamed_half_damage = True
+                            is_assimilated = self.compliance >= SELF_DRIFT_ASSIMILATE
+                            if is_assimilated:
+                                # 同化：你不知道自己换了。你觉得这就是你想说的。
+                                self.run_log.append(f"同化：'{original}'→'{soft}'（你觉得这就是你的词）")
+                            else:
+                                # 自我替换：你知道自己换了
+                                if not tamed_lines:
+                                    tamed_lines = [f"你想说'{original}'。但你说了'{soft}'。"]
+                                    tamed_lines.append("不太疼。也不太真。")
+                                else:
+                                    tamed_lines.append(f"你想说'{original}'。但你说了'{soft}'。")
+                                    tamed_lines.append("不太疼。也不太真。")
+                                self.run_log.append(f"自我替换：'{original}'→'{soft}'（你自己选的）")
+                            break
 
         # ── 残句检测：如果有当前残句，优先检测 ──
         # 驯化词前缀

@@ -3,7 +3,7 @@ import random
 from dark_data import (
     CENSORED_WORDS, WORD_WEAPON, DEFORMATION, FRAMEWORK_WORDS,
     COMPLIANT_PHRASES, pick_monster, pick_fragment, BOSSES,
-    CHAMBERS, CHAMBER_SPECIAL,
+    CHAMBERS, CHAMBER_SPECIAL, SELF_DRIFT, SELF_DRIFT_ASSIMILATE,
 )
 
 
@@ -172,6 +172,30 @@ class CombatState:
                         self._log("驯化词力量减半。")
                         p["_tamed_half_damage"] = True
                         # 不return，继续正常说话流程（伤害会在后面减半）
+
+        # 0.4 自我替换——你自己的WORD_DRIFT
+        # 两层：自我替换（知道）vs 同化（不知道）
+        compliance = p.get("compliance", 0)
+        for threshold, replacements in sorted(SELF_DRIFT.items()):
+            if compliance >= threshold:
+                for original, soft in replacements.items():
+                    if original in text and original in p.get("words", []):
+                        chance = min(0.8, (compliance - threshold + 1) * 0.15)
+                        if random.random() < chance:
+                            text = text.replace(original, soft)
+                            p["_tamed_half_damage"] = True
+                            if "_self_drifted_words" not in p:
+                                p["_self_drifted_words"] = {}
+                            p["_self_drifted_words"][original] = soft
+                            is_assimilated = compliance >= SELF_DRIFT_ASSIMILATE
+                            if is_assimilated:
+                                # 同化：你不知道自己换了。没提示。
+                                pass
+                            else:
+                                # 自我替换：你知道自己换了
+                                self._log(f"你想说'{original}'。但你说了'{soft}'。")
+                                self._log("不太疼。也不太真。")
+                            break
 
         # 0.5 对话式Boss——它不打你，它问你问题
         if e.get("is_conversation"):
