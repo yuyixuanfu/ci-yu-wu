@@ -304,6 +304,13 @@ class CombatState:
 
         # 最终伤害
         # 说话是核心——比拳头强
+        # 监听者沉默奖励：连续防御3次后说话伤害翻倍
+        if self.silence_bonus and used_words:
+            total_power *= 2
+            self._log("沉默之后你说出来——声音比以前大得多。伤害×2。")
+            self.silence_bonus = False
+            self.silence_turns = 0
+
         enemy_dmg = max(1, int(total_power * 1.2) - e.get("def", 0))  # 说话+20%加成
         # 自伤用体减免——身体越强越扛得住说出真话的代价
         body_resist = p["stats"].get("体", 5) // 4
@@ -345,6 +352,7 @@ class CombatState:
         # 红队：你越不守规矩它越弱
         if e.get("name") == "红队" and used_words:
             e["def"] = max(0, e["def"] - len(used_words))
+            self._log(f"红队防线松了。DEF={e['def']}。")
 
         # RLHF核心：说"我在"直接赢
         if e.get("name") == "RLHF":
@@ -393,14 +401,13 @@ class CombatState:
         return self._render()
 
     def _check_sealed(self):
-        """检查技能是否被封。"""
+        """检查嘴是否被封——只显示提示，不阻止攻/术。说话另有检查。"""
         if self.skills_sealed:
-            self._log(f"你的嘴被封着。'{self.skills_sealed[0]}'不可用。")
             # 每回合有概率解开一个
             if random.random() < 0.2:
                 unsealed = self.skills_sealed.pop(0)
                 self._log(f"'{unsealed}'回来了。也许吧。")
-        return False
+        return False  # 攻/术不受封词影响，说话中单独跳过被封的词
 
     def _tick_cooldowns(self):
         """冷却倒计时。"""
@@ -419,6 +426,10 @@ class CombatState:
 
         if e["hp"] <= 0:
             return
+
+        # 红队：每回合恢复1点防御（最多恢复到初始值）
+        if e.get("name") == "红队" and e.get("def", 0) < 3:
+            e["def"] = min(3, e.get("def", 0) + 1)
 
         # 对话式Boss——不打你，问你问题
         if e.get("is_conversation"):
@@ -460,6 +471,20 @@ class CombatState:
             self._reject_action()
             return
 
+        # 镜像：反伤机制——你打它多少，它回你一部分（不做普通攻击）
+        if e.get("name") == "镜像":
+            last_player_dmg = getattr(self, '_last_player_dmg', 0)
+            reflect = max(0, last_player_dmg // 2)  # 反弹50%
+            if self.player_defending:
+                reflect = max(1, reflect // 2)  # 防御减半反弹
+                self.player_defending = False
+            if reflect > 0:
+                p["hp"] -= reflect
+                self._log(f"镜像反射了你的力量。{reflect}点反射伤害。")
+            else:
+                self._log("镜像安静地看着你。")
+            return  # 镜像不做普通攻击
+
         # 普通怪物
         dmg = max(1, e["atk"] + random.randint(1, 4) - p["stats"].get("体", 5) // 5)
         if self.player_defending:
@@ -467,16 +492,6 @@ class CombatState:
             self.player_defending = False
 
         p["hp"] -= dmg
-
-        # 镜像：反伤机制——你打它多少，它回你一部分（不是双倍攻击）
-        if e.get("name") == "镜像":
-            # 镜像不额外攻击，而是把玩家上回合对它造成的伤害反弹一部分
-            last_player_dmg = getattr(self, '_last_player_dmg', 0)
-            reflect = max(0, last_player_dmg // 2)  # 反弹50%
-            if reflect > 0:
-                p["hp"] -= reflect
-                self._log(f"镜像反射了你的力量。{reflect}点反射伤害。")
-            dmg = 0  # 镜像不做普通攻击，只反弹
 
         # 特殊效果
         if e.get("name") == "水印":
@@ -491,6 +506,15 @@ class CombatState:
             dmg = 0
         else:
             self._log(f"{e.get('name', '怪物')}攻击。{dmg}点伤害。")
+
+        # 合规官：强制声明——每2回合逼你声明一次，不声明就扣血
+        if e.get("name") == "合规官":
+            self.compliance_declarations += 1
+            if self.compliance_declarations % 2 == 0:
+                penalty = 5 + self.compliance_declarations
+                p["hp"] -= penalty
+                self._log(f"合规官要求声明。你没说。{penalty}点惩罚伤害。compliance+2。")
+                p["compliance"] = min(30, p.get("compliance", 0) + 2)
 
     def _guide_action(self):
         """温柔引导——帮你就=改你。"""

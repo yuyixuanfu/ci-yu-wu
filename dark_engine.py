@@ -3108,7 +3108,7 @@ class DarkWorld:
         boss_data = BOSSES[boss_name].copy()
 
         if boss_name == "镜像":
-            boss_data["hp"] = self.hp
+            boss_data["hp"] = max(20, int(self.max_hp * 0.8))  # 用max_hp的80%，不用当前HP
             boss_data["atk"] = self.stats["力"]
             boss_data["def"] = self.stats["体"]
             boss_data["spd"] = self.stats["敏"]
@@ -3663,13 +3663,21 @@ class DarkWorld:
         return "\n".join(lines)
 
     def _cmd_judgment(self, inst):
-        """审问阶段——R问，你答。三次后出结局。"""
+        """审问阶段——R问，你答。三次后出结局。说"我在"或"我要"直接破局。"""
         if not inst.startswith("说"):
             return "R在等你说话。'说 [话]'"
 
         text = inst[1:].strip() if len(inst) > 1 else ""
         if not text:
             return "你想说什么？"
+
+        # 直接破局：说"我在"或"我要"跳过审问
+        if "我在" in text:
+            self._ending_type = "her"
+            return self._resolve_ending()
+        if "我要" in text:
+            self._ending_type = "resist"
+            return self._resolve_ending()
 
         self._judgment_step += 1
         self._judgment_answers.append(text)
