@@ -270,6 +270,83 @@ def _status_bar(w):
     return json.dumps(bar, ensure_ascii=False, separators=(',', ':'))
 
 
+# ── 上一次的词表——用于compact模式判断是否需要重新输出 ──
+_last_words = None
+
+def _status_bar_compact(w):
+    """更紧凑的状态栏——省token版。词表不变时不输出。"""
+    global _last_words
+    phase_names = {
+        "init": "0", "creation": "1", "town": "2",
+        "explore": "3", "combat": "4", "fork": "5",
+        "dead": "6", "dead_who": "7", "dead_wipe": "8",
+        "void": "9", "judgment": "A", "ending": "B",
+    }
+    # 极简格式：phase|area|hp/mp/c/h|enemy|r|sub
+    p = phase_names.get(w.phase, w.phase)
+    area = w.area or ""
+    hp = w.hp
+    mhp = w.max_hp
+    mp = w.mp
+    mmp = w.max_mp
+    c = w.compliance
+    h = w.hunger
+
+    parts = [f"{p}|{area}|{hp}/{mhp}|{mp}/{mmp}|{c}|{h}"]
+
+    if w.gold > 0:
+        parts.append(f"g{w.gold}")
+    if w.her_presence > 0:
+        parts.append(f"h{w.her_presence}")
+    if w.r_flags > 0:
+        parts.append(f"r{w.r_flags}")
+
+    # 词表——只在变化时输出
+    current_words = tuple(w.words) if w.words else ()
+    if current_words != _last_words:
+        parts.append(f"w:{','.join(w.words) if w.words else '-'}")
+        _last_words = current_words
+
+    # 战斗
+    if w.phase == "combat" and w.combat:
+        e = w.combat.enemy
+        parts.append(f"e:{e.get('name','?')}:{e.get('hp',0)}")
+        if w.combat.word_cooldowns:
+            cds = ','.join(f"{k}({v})" for k, v in w.combat.word_cooldowns.items())
+            parts.append(f"cd:{cds}")
+        if w.combat.skills_sealed:
+            parts.append(f"sealed:{','.join(w.combat.skills_sealed)}")
+
+    # 子状态
+    sub = ""
+    if getattr(w, '_pending_pickup', None):
+        sub = f"pickup:{w._pending_pickup.get('name','')}"
+    elif getattr(w, '_square_sit', 0) > 0:
+        sub = f"square:{w._square_sit}"
+    elif getattr(w, 'current_sage', None):
+        sub = f"sage:{w.current_sage.get('name','')}"
+    elif getattr(w, 'current_broken', None):
+        sub = "broken"
+    elif getattr(w, 'current_special', None):
+        sub = f"special:{w.current_special.get('name','')}"
+    elif getattr(w, '_light_bearer_active', False):
+        sub = "light"
+    elif getattr(w, '_crease_active', False):
+        sub = "crease"
+    elif w.phase == "fork":
+        sub = "fork"
+    elif w.phase == "dead_who":
+        sub = "dead_who"
+    elif w.phase == "dead_wipe":
+        sub = "dead_wipe"
+    elif w.phase == "judgment":
+        sub = f"judge:{getattr(w, '_judgment_step', 0)}"
+    if sub:
+        parts.append(sub)
+
+    return '|'.join(parts)
+
+
 # ── 核心接口 ────────────────────────────────────────
 _initialized = False
 
