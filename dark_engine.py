@@ -17,7 +17,10 @@ from dark_data import (
 )
 from dark_combat import CombatState
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
+try:
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _HERE = os.getcwd()
 _SAVE_FILE = os.path.join(_HERE, "dark_save.json")
 
 

@@ -24,7 +24,10 @@ import sys, os, io, json, base64, hashlib, time
 if sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
+try:
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _HERE = os.getcwd()
 _SAVE_FILE = os.path.join(_HERE, "ciyuwu_save.json")
 
 # ── 确定性PRNG ──────────────────────────────────────
