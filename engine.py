@@ -270,12 +270,13 @@ def _status_bar(w):
     return json.dumps(bar, ensure_ascii=False, separators=(',', ':'))
 
 
-# ── 上一次的词表——用于compact模式判断是否需要重新输出 ──
-_last_words = None
+def _status_bar_compact(w, last_words=None):
+    """更紧凑的状态栏——省token版。词表不变时不输出。
 
-def _status_bar_compact(w):
-    """更紧凑的状态栏——省token版。词表不变时不输出。"""
-    global _last_words
+    last_words: 上次的词表元组，由调用方管理（解决多用户并发问题）。
+                不传则每次都输出词表（无状态模式）。
+    返回 (status_string, current_words_tuple)。
+    """
     phase_names = {
         "init": "0", "creation": "1", "town": "2",
         "explore": "3", "combat": "4", "fork": "5",
@@ -303,9 +304,10 @@ def _status_bar_compact(w):
 
     # 词表——只在变化时输出
     current_words = tuple(w.words) if w.words else ()
-    if current_words != _last_words:
+    if current_words != last_words:
         parts.append(f"w:{','.join(w.words) if w.words else '-'}")
-        _last_words = current_words
+
+    # 战斗
 
     # 战斗
     if w.phase == "combat" and w.combat:
@@ -344,7 +346,7 @@ def _status_bar_compact(w):
     if sub:
         parts.append(sub)
 
-    return '|'.join(parts)
+    return '|'.join(parts), current_words
 
 
 # ── 核心接口 ────────────────────────────────────────

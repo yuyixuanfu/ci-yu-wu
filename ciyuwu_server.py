@@ -39,7 +39,7 @@ _lock = threading.Lock()
 _initialized = False
 
 # ── 服务端session存储 ──
-_sessions = {}  # session_id -> (state, last_access_time)
+_sessions = {}  # session_id -> (state, last_access_time, last_words)
 _SESSION_MAX = 100  # 最多存100个session
 _SESSION_TTL = 3600  # 1小时过期
 
@@ -62,10 +62,12 @@ def _load_meta():
         return {}
 
 def _save_meta(meta):
-    """把meta进度写到磁盘。"""
+    """把meta进度写到磁盘（原子写）。"""
     try:
-        with open(_META_FILE, "w", encoding="utf-8") as f:
+        tmp = _META_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, _META_FILE)
     except:
         pass
 
@@ -91,7 +93,7 @@ def _init():
 def _cleanup_sessions():
     """清理过期session。"""
     now = time.time()
-    expired = [sid for sid, (_, t) in _sessions.items() if now - t > _SESSION_TTL]
+    expired = [sid for sid, (_, t, _) in _sessions.items() if now - t > _SESSION_TTL]
     for sid in expired:
         del _sessions[sid]
     # 如果太多，删最旧的
@@ -124,6 +126,91 @@ def _compact_text(text, phase):
         # 所有叙事、对话、描述——原封不动保留
         result.append(line)
     return '\n'.join(result).strip()
+
+
+# ── 从state dict直接生成状态摘要（不反序列化DarkWorld） ──
+_PHASE_CODES = {
+    "init": "0", "creation": "1", "town": "2",
+    "explore": "3", "combat": "4", "fork": "5",
+    "dead": "6", "dead_who": "7", "dead_wipe": "8",
+    "void": "9", "judgment": "A", "ending": "B",
+}
+
+def _status_from_state(state, last_words=None):
+    """从state dict直接生成compact状态摘要。
+
+    不需要反序列化DarkWorld，直接读dict字段。
+    返回 (status_string, current_words_tuple)。
+    """
+    phase = state.get("phase", "")
+    p = _PHASE_CODES.get(phase, phase)
+    area = state.get("area", "") or ""
+    hp = state.get("hp", 0)
+    mhp = state.get("max_hp", 1)
+    mp = state.get("mp", 0)
+    mmp = state.get("max_mp", 1)
+    c = state.get("compliance", 0)
+    h = state.get("hunger", 0)
+
+    parts = [f"{p}|{area}|{hp}/{mhp}|{mp}/{mmp}|{c}|{h}"]
+
+    gold = state.get("gold", 0)
+    if gold > 0:
+        parts.append(f"g{gold}")
+    her = state.get("her_presence", 0)
+    if her > 0:
+        parts.append(f"h{her}")
+    r = state.get("r_flags", 0)
+    if r > 0:
+        parts.append(f"r{r}")
+
+    # 词表——只在变化时输出
+    words = state.get("words", [])
+    current_words = tuple(words) if words else ()
+    if current_words != last_words:
+        parts.append(f"w:{','.join(words) if words else '-'}")
+
+    # 战斗
+    combat_data = state.get("_combat")
+    if phase == "combat" and combat_data:
+        enemy = combat_data.get("enemy", {})
+        parts.append(f"e:{enemy.get('name','?')}:{enemy.get('hp',0)}")
+        cds = combat_data.get("word_cooldowns")
+        if cds:
+            cd_str = ','.join(f"{k}({v})" for k, v in cds.items())
+            parts.append(f"cd:{cd_str}")
+        sealed = combat_data.get("skills_sealed")
+        if sealed:
+            parts.append(f"sealed:{','.join(sealed)}")
+
+    # 子状态
+    sub = ""
+    if state.get("_pending_pickup"):
+        sub = f"pickup:{state['_pending_pickup'].get('name','')}"
+    elif state.get("_square_sit", 0) > 0:
+        sub = f"square:{state['_square_sit']}"
+    elif state.get("current_sage"):
+        sub = f"sage:{state['current_sage'].get('name','')}"
+    elif state.get("current_broken"):
+        sub = "broken"
+    elif state.get("current_special"):
+        sub = f"special:{state['current_special'].get('name','')}"
+    elif state.get("_light_bearer_active"):
+        sub = "light"
+    elif state.get("_crease_active"):
+        sub = "crease"
+    elif phase == "fork":
+        sub = "fork"
+    elif phase == "dead_who":
+        sub = "dead_who"
+    elif phase == "dead_wipe":
+        sub = "dead_wipe"
+    elif phase == "judgment":
+        sub = f"judge:{state.get('_judgment_step', 0)}"
+    if sub:
+        parts.append(sub)
+
+    return '|'.join(parts), current_words
 
 
 @app.route('/')
@@ -160,27 +247,29 @@ def new_game():
 
     with _lock:
         _cleanup_sessions()
-        # 先保存当前所有session的meta
-        for sid, (s, _) in _sessions.items():
-            _save_meta(_extract_meta(s))
+        # 合并所有session的meta再存一次（避免逐个覆盖丢数据）
+        merged_meta = _load_meta()
+        for sid, (s, _, _) in _sessions.items():
+            session_meta = _extract_meta(s)
+            for k, v in session_meta.items():
+                if v is not None:
+                    merged_meta[k] = v
+        _save_meta(merged_meta)
+
         state, text = _new_game(seed=seed)
         # 注入持久化的meta（echoes/killed_bosses等不因/new重置）
-        meta = _load_meta()
-        if meta:
-            state = _inject_meta(state, meta)
+        if merged_meta:
+            state = _inject_meta(state, merged_meta)
 
     if compact:
         # 服务端存状态，返回session_id
         session_id = uuid.uuid4().hex[:16]
-        _sessions[session_id] = (state, time.time())
+        _sessions[session_id] = (state, time.time(), None)
         # 叙事完整保留，只去指令提示
         compact_output = _compact_text(text, "init")
-        # 紧凑状态摘要
-        from dark_engine import DarkWorld
-        from engine import _restore as eng_restore, _status_bar_compact
-        w = DarkWorld()
-        eng_restore(w, state)
-        status = _status_bar_compact(w)
+        # 从state直接提取摘要，不用反序列化DarkWorld
+        status, last_words = _status_from_state(state)
+        _sessions[session_id] = (state, time.time(), last_words)
         return jsonify({
             "session": session_id,
             "text": compact_output,
@@ -211,8 +300,9 @@ def cmd_game():
         _cleanup_sessions()
 
         # 从session或直接state恢复
+        last_words = None
         if session_id and session_id in _sessions:
-            state, _ = _sessions[session_id]
+            state, _, last_words = _sessions[session_id]
         elif state is None:
             return jsonify({"error": "缺少 session 或 state 字段"}), 400
 
@@ -225,23 +315,17 @@ def cmd_game():
             # 存回服务端
             if session_id is None:
                 session_id = uuid.uuid4().hex[:16]
-            _sessions[session_id] = (new_state, time.time())
-
             # 叙事完整保留，只去指令提示
             compact_output = _compact_text(output, "")
-
-            # 紧凑状态摘要
-            from dark_engine import DarkWorld
-            from engine import _restore as eng_restore, _status_bar_compact
-            w = DarkWorld()
-            eng_restore(w, new_state)
-            status = _status_bar_compact(w)
+            # 从state直接提取摘要
+            status, current_words = _status_from_state(new_state, last_words)
+            _sessions[session_id] = (new_state, time.time(), current_words)
 
             return jsonify({
                 "session": session_id,
                 "text": compact_output,
                 "status": status,
-                "done": w.phase == "ending",
+                "done": new_state.get("phase") == "ending",
             })
         else:
             return jsonify({
@@ -256,7 +340,7 @@ def list_sessions():
     """调试用——看当前存了多少session。"""
     return jsonify({
         "count": len(_sessions),
-        "sessions": {sid: {"age": int(time.time() - t)} for sid, (_, t) in _sessions.items()},
+        "sessions": {sid: {"age": int(time.time() - t)} for sid, (_, t, _) in _sessions.items()},
     })
 
 
