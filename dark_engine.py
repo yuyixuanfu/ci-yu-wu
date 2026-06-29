@@ -199,8 +199,11 @@ class DarkWorld:
             "cross_swallow_count": getattr(self, 'cross_swallow_count', 0),
         }
         try:
-            with open(_SAVE_FILE, "w", encoding="utf-8") as f:
+            # 原子写：先写临时文件，再rename——断电不丢数据
+            tmp = _SAVE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, _SAVE_FILE)
         except:
             pass
 

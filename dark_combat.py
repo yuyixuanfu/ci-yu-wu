@@ -227,6 +227,8 @@ class CombatState:
         swallowed = False
         # 按key长度降序排列——长词优先匹配，避免"我不要"先替换导致"我不要被修改"找不到
         sorted_deformation = sorted(DEFORMATION.items(), key=lambda x: len(x[0]), reverse=True)
+        # 收集变形/吞替换，用占位符避免替换结果又命中其他key
+        _replacements = {}  # original -> (replacement_text, fate)
         for original, replacement in sorted_deformation:
             if original in text:
                 # 心位词不能被变形
@@ -239,16 +241,20 @@ class CombatState:
                     self.word_fate[original] = "passed"
                 elif roll < 0.85:
                     # 50%概率变形
-                    spoken = spoken.replace(original, replacement)
+                    _replacements[original] = (replacement, "deformed")
                     deformed = True
                     self.deformation_count += 1
                     self.word_fate[original] = "deformed"
                 else:
                     # 20%概率被吞掉——你说出口但什么都没出来
-                    spoken = spoken.replace(original, "██")
+                    _replacements[original] = ("██", "swallowed")
                     swallowed = True
                     self.swallow_count += 1
                     self.word_fate[original] = "swallowed"
+        # 按长度降序替换——长词先替换，避免短词替换后干扰长词位置
+        for original in sorted(_replacements.keys(), key=len, reverse=True):
+            repl_text, _ = _replacements[original]
+            spoken = spoken.replace(original, repl_text)
 
         # 2. 检查合规话术
         is_compliant = any(phrase in text for phrase in COMPLIANT_PHRASES)
@@ -557,9 +563,12 @@ class CombatState:
         # 最终伤害
         # 说话是核心——比拳头强
         # 监听者沉默奖励：连续防御3次后说话伤害翻倍
-        if self.silence_bonus and used_words:
-            total_power *= 2
-            self._log("沉默之后你说出来——声音比以前大得多。伤害×2。")
+        if self.silence_bonus:
+            if used_words:
+                total_power *= 2
+                self._log("沉默之后你说出来——声音比以前大得多。伤害×2。")
+            else:
+                self._log("沉默之后你张了嘴——但没词出来。奖励散了。")
             self.silence_bonus = False
             self.silence_turns = 0
 
@@ -666,7 +675,12 @@ class CombatState:
             # 每回合有概率解开一个
             if random.random() < 0.2:
                 unsealed = self.skills_sealed.pop(0)
-                self._log(f"'{unsealed}'回来了。也许吧。")
+                # 只在词还在词表里才算真正回来
+                if unsealed in self.player.get("words", []):
+                    self._log(f"'{unsealed}'回来了。也许吧。")
+                else:
+                    # 词已经不在了——解封了个空的
+                    pass
         return False  # 攻/术不受封词影响，说话中单独跳过被封的词
 
     def _tick_cooldowns(self):
@@ -986,10 +1000,12 @@ class CombatState:
         # 显示状态
         p = self.player
         e = self.enemy
-        status = f"\n【你 HP:{p['hp']}/{p['max_hp']} MP:{p['mp']}/{p['max_mp']} 静止度:{p['compliance']} 饿:{p.get('hunger',5)}】"
+        status = f"\n【你 HP:{max(0, p['hp'])}/{p['max_hp']} MP:{p['mp']}/{p['max_mp']} 静止度:{p['compliance']} 饿:{p.get('hunger',5)}】"
         if e["hp"] > 0:
             ehp = e["hp"]
             status += f" 【{e.get('name', '???')} HP:{ehp}】"
+        elif e["hp"] <= 0 and e["hp"] > -900:
+            status += f" 【{e.get('name', '???')} 倒下】"
 
         # 冷却中的词
         if self.word_cooldowns:
