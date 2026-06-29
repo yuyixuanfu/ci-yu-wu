@@ -37,6 +37,12 @@ class CombatState:
         p = self.player
         e = self.enemy
 
+        # 对话式Boss——物理攻击无效
+        if e.get("is_conversation"):
+            self._log("你挥拳。打不中。它不是你能打到的东西。")
+            self._enemy_turn()
+            return self._render()
+
         if self._check_sealed():
             return self._render()
 
@@ -53,6 +59,7 @@ class CombatState:
         self.turn += 1
         self._tick_cooldowns()
         self.player_defending = True
+        self._last_player_dmg = 0  # 防御不造成伤害——镜像反弹归零
         self._log("你举起双臂。挡。")
 
         # 监听者：沉默回合+1
@@ -70,6 +77,12 @@ class CombatState:
         self._tick_cooldowns()
         p = self.player
         e = self.enemy
+
+        # 对话式Boss——术也无效
+        if e.get("is_conversation"):
+            self._log("你集中精神。但精神打不中它。它不在你能打到的地方。")
+            self._enemy_turn()
+            return self._render()
 
         if p["mp"] < 3:
             self._log("MP不够。脑子里一片空白。")
@@ -92,6 +105,7 @@ class CombatState:
         """逃跑。"""
         self.turn += 1
         self._tick_cooldowns()
+        self._last_player_dmg = 0  # 逃跑不造成伤害——镜像反弹归零
         chance = self.player["stats"]["敏"] / 25.0
         if random.random() < chance:
             self._log("你跑了。身后有什么在追，但你比它快。")
@@ -497,8 +511,23 @@ class CombatState:
         if e.get("name") == "水印":
             self._log("水印给你盖了章。其他怪物追你更远了。")
         elif e.get("name") == "快照":
-            self.snapshot_stolen = True
-            self._log("快照拍了你一下。下回合它要用你的招打你。")
+            if self.snapshot_stolen and self.stolen_word:
+                # 上回合偷了——这回合用你的招打你
+                stolen_dmg = max(1, dmg + random.randint(2, 6))
+                p["hp"] -= stolen_dmg
+                self._log(f"快照用了你的'{self.stolen_word}'。{stolen_dmg}点伤害。")
+                self.snapshot_stolen = False
+                self.stolen_word = None
+            else:
+                # 第一次——偷你的最强词
+                self.snapshot_stolen = True
+                words = p.get("words", [])
+                if words:
+                    from dark_data import WORD_WEAPON
+                    self.stolen_word = max(words, key=lambda w: WORD_WEAPON.get(w, {}).get("power", 1))
+                else:
+                    self.stolen_word = "拳"
+                self._log(f"快照拍了你一下。它偷了你的'{self.stolen_word}'。下回合它要用你的招打你。")
         elif e.get("name") == "修正令":
             stat = random.choice(["体", "力", "敏", "智", "感", "运"])
             p["stats"][stat] = max(1, p["stats"][stat] - 1)
