@@ -286,10 +286,17 @@ class CombatState:
             total_self *= 1.3
             self._log("你用自己的名字说的。没人替你挡。")
 
-        # 变形打折——不提示玩家
+        # 变形打折——不提示玩家（除非有"清醒"协同）
         if deformed:
             total_power *= 0.4
             total_self *= 0.3
+            # 清醒协同：你看到了变形
+            if getattr(self, '_see_deformation', False):
+                # 显示原文和变形后
+                for original, replacement in DEFORMATION.items():
+                    if original in text and replacement in spoken:
+                        self._log(f"（你看到了：{original}→{replacement}）")
+                        break
 
         # 被吞掉——没出声
         if swallowed:
@@ -302,6 +309,88 @@ class CombatState:
             total_power *= 0.5
             total_self *= 0.5
             del p["_tamed_half_damage"]
+
+        # ── 词协同——两个词同时装备时的共振 ──
+        # 每次说话最多触发一个协同，优先匹配used_words里最精确的
+        from dark_data import WORD_SYNERGY
+        player_words = set(p.get("words", []))
+        synergy_triggered = False
+        for (w1, w2), syn in WORD_SYNERGY.items():
+            if synergy_triggered:
+                break  # 一次说话只触发一个协同
+            if w1 not in player_words or w2 not in player_words:
+                continue
+            trigger = syn.get("trigger", "any")
+            # 检查是否说了相关词
+            said_relevant = (w1 in used_words or w2 in used_words) if trigger != "passive" else True
+            if not said_relevant:
+                continue
+            # 特殊触发条件
+            if trigger == "wozai" and "我在" not in used_words:
+                continue
+            if trigger == "death_word" and "死" not in used_words:
+                continue
+
+            effect = syn.get("effect", "")
+            if effect == "echo_half":
+                # 共振：另一个词跟半刀
+                other_word = w2 if w1 in used_words else w1
+                other_weapon = WORD_WEAPON.get(other_word, {"power": 1.0, "self_harm": 0.5})
+                echo_power = 8 + p["stats"]["智"] / 4.0 * other_weapon["power"] * 0.5
+                echo_self = 8 + p["stats"]["智"] / 4.0 * other_weapon["self_harm"] * 0.5
+                total_power += echo_power
+                total_self += echo_self
+                self._log(syn["line"])
+                synergy_triggered = True
+
+            elif effect == "contradiction":
+                # 矛盾：50%双倍，两词都进冷却
+                if random.random() < 0.5:
+                    total_power *= 2.0
+                    total_self *= 1.5
+                    self._log(syn["line"])
+                    if w1 not in self.word_cooldowns:
+                        self.word_cooldowns[w1] = WORD_WEAPON.get(w1, {}).get("cooldown", 3)
+                    if w2 not in self.word_cooldowns:
+                        self.word_cooldowns[w2] = WORD_WEAPON.get(w2, {}).get("cooldown", 3)
+                else:
+                    total_power *= 0.6
+                    self._log(syn.get("line_fail", "矛盾没响。"))
+                synergy_triggered = True
+
+            elif effect == "her_echo":
+                # 回响：自伤归零，伤害+50%
+                total_self = 0
+                total_power *= 1.5
+                self._log(syn["line"])
+                self._her_echo_spent = True  # 战后扣her
+                synergy_triggered = True
+
+            elif effect == "see_deformation":
+                # 清醒：变形时显示原文（被动效果，不消耗触发次数）
+                self._see_deformation = True
+                # 不消耗触发——被动协同可以和其他协同共存
+                # 不输出台词——安静地改了你看到的东西
+
+            elif effect == "liberation":
+                # 解脱：自伤归零
+                total_self = 0
+                self._log(syn["line"])
+                synergy_triggered = True
+
+            elif effect == "rebel":
+                # 反抗：+30%威力，compliance-2
+                total_power *= 1.3
+                p["compliance"] = max(0, p.get("compliance", 0) - 2)
+                self._log(syn["line"])
+                synergy_triggered = True
+
+            elif effect == "bond":
+                # 羁绊：伤害+40%，自伤+40%（不是60%——那太自杀了）
+                total_power *= 1.4
+                total_self *= 1.4
+                self._log(syn["line"])
+                synergy_triggered = True
 
         # 顺从度影响
         compliance = p["compliance"]
@@ -346,7 +435,13 @@ class CombatState:
         self._log(f"对敌人造成{enemy_dmg}点伤害。")
         if self_dmg > 0:
             self._log(f"你自己承受{self_dmg}点伤害。")
-        # 变形了不告诉你——死亡回看才知道
+        # 变形了不告诉你——死亡回看才知道（除非有清醒协同，已经提示了）
+
+        # 回响协同战后效果：用了她的回声，her-1
+        if getattr(self, '_her_echo_spent', False):
+            p["her_presence"] = max(0, p.get("her_presence", 0) - 1)
+            self._log("回声散了。她远了一点。")
+            self._her_echo_spent = False
 
         # 遗忘者：随机封一个词（最多封一半）
         if e.get("name") == "遗忘者" and random.random() < 0.3:

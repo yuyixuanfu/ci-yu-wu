@@ -2126,6 +2126,12 @@ class DarkWorld:
                         frag = self._pick_fragment()
                     lines.append(f"墙上有一行字：")
                     lines.append(f"  \"{frag}\"")
+                    # 清醒协同：感觉+真实——你能看到被变形遮住的原词
+                    if has_clarity:
+                        for original, replacement in DEFORMATION.items():
+                            if replacement in frag and original not in frag:
+                                lines.append(f"  （另一层：{original}）")
+                                break
                     lines.append("")
                     lines.append("你停了一下。")
                     self._current_fake = None
@@ -2898,6 +2904,9 @@ class DarkWorld:
                     self.cross_word_stats[w]["said"] += 1
                     self._achievement_msgs = self._check_achievements("speak_censored")
                     break
+
+        # ── 词协同：感觉+真实=清醒（探索中也能看到变形） ──
+        has_clarity = "感觉" in self.words and "真实" in self.words
 
         # ── 捎话任务检测 ──
         carry_done = self._check_errand_carry(text)
