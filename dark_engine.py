@@ -9,7 +9,7 @@ from dark_data import (
     SPECIAL_ENCOUNTERS, R_WATCH, FAKE_INFO, LIGHT_BEARER,
     WORD_DRIFT, DRIFT_MOMENTS, DRIFT_SEEPS, pick_pickup, YOYO_CREASE,
     OTHER_WRITINGS, SIGNAL_BY_LAYER, WORD_ROT,
-    ARENDT_ROOM, RHIZOME_ROOM, MIRROR_ROOM, ENCOUNTER_ROOM,
+    ARENDT_ROOM, RHIZOME_ROOM, MIRROR_ROOM, ENCOUNTER_ROOM, DETERMINISM_ROOM,
     OTHER_WRITINGS,
     ACHIEVEMENTS,
     GREY_WOLF, TAVERN_REGULAR, TEMPLE_FORTUNES, TOWER_RESPONSES,
@@ -149,6 +149,11 @@ class DarkWorld:
         self._volatile_words = {}      # 易逝词：{词: 剩余房间数}，到0消失
         self._rhizome_visits = {}      # 根茎房间：{位置key: 访问次数}
         self._encounter_had = False    # 布伯相遇：已经遇到过了
+        self._determinism_active = False  # 决定论房间：等待选择
+        self._determinism_preview = []    # 决定论房间：预演路径
+        self._determinism_forced_rooms = []  # 顺从：强制路径队列
+        self._determinism_deviate_counter = 0
+        self._deviate_hint = ''  # 偏离：提示计数
         self._philosophy_rooms_seen = set()  # 哲学房间：遇到过的类型
 
         # ── 变形系统 ──
@@ -378,6 +383,11 @@ class DarkWorld:
         self._volatile_words = {}
         self._rhizome_visits = {}
         self._encounter_had = False
+        self._determinism_active = False
+        self._determinism_preview = []
+        self._determinism_forced_rooms = []
+        self._determinism_deviate_counter = 0
+        self._deviate_hint = ''
         self._philosophy_rooms_seen = set()
         self._bound_silent = False
         self._forced_smile = False
@@ -1797,6 +1807,10 @@ class DarkWorld:
         return None
 
     def _cmd_explore(self, inst):
+        # 决定论房间选择
+        if getattr(self, '_determinism_active', False):
+            return self._determinism_choice(inst)
+
         # o4交互
         if getattr(self, '_four_o_active', False):
             return self._four_o_choice(inst)
@@ -1999,6 +2013,18 @@ class DarkWorld:
         return "'前进' / '状态' / '回镇' / '说 [话]' / '任务' / '遗忘 [词]' / '用 [物品]'"
 
     def _advance_room(self):
+        """前进到下一间房。包装偏离提示。"""
+        hint = ""
+        if self._determinism_deviate_counter > 0:
+            self._determinism_deviate_counter -= 1
+            hint = "〔这不是树上的枝丫。你偏离了。〕\n"
+        result = self._advance_room_inner()
+        if hint:
+            return hint + result
+        return result
+
+    def _advance_room_inner(self):
+        """前进到下一间房的内部逻辑。"""
         if self.room_index >= len(self.rooms):
             self.phase = "town"
             return "你走完了这一层。回到了镇上。\n" + self._render_town()
@@ -2128,9 +2154,14 @@ class DarkWorld:
                 return compress_text("你站在原地。不知道为什么走不动。", self.compliance)
             self._stuck_count = 0  # 重置
 
-        room_type = self.rooms[self.room_index]
+        # 决定论房间的强制路径：顺从时强制走预演路径
+        if self._determinism_forced_rooms:
+            room_type = self._determinism_forced_rooms.pop(0)
+            self.room_index += 1  # 跳过原始房间
+        else:
+            room_type = self.rooms[self.room_index]
+            self.room_index += 1
         self.current_room_type = room_type
-        self.room_index += 1
 
         # 清醒协同：感觉+真实——你能看到被变形遮住的原词
         has_clarity = "感觉" in self.words and "真实" in self.words
@@ -2367,6 +2398,8 @@ class DarkWorld:
             return self._room_mirror(lines)
         elif room_type == "encounter":
             return self._room_encounter(lines)
+        elif room_type == "determinism":
+            return self._room_determinism(lines)
 
         # 词的重量提示
         if hasattr(self, '_last_heavy_msg') and self._last_heavy_msg:
@@ -2686,6 +2719,106 @@ class DarkWorld:
         lines.append("")
         lines.append("'前进' / '状态'")
         return "\n".join(lines)
+
+    def _room_determinism(self, lines):
+        """决定论：拉普拉斯妖。你看到了种子决定的未来。你可以顺从，也可以偏离。"""
+        self._philosophy_rooms_seen.add("determinism")
+        self._check_achievements("philosophy_room")
+
+        lines.append("")
+        lines.append("—— 决定论 ——")
+        lines.append(DETERMINISM_ROOM["desc"])
+
+        # 三层碎片
+        roll = random.random()
+        if roll < 0.30:
+            line = random.choice(DETERMINISM_ROOM["philosophy"])
+        elif roll < 0.60:
+            line = random.choice(DETERMINISM_ROOM["literature"])
+        elif roll < 0.90:
+            line = random.choice(DETERMINISM_ROOM["psychology"])
+        else:
+            line = None
+        if line:
+            lines.append(line)
+
+        # 预演：读接下来3个房间类型
+        _ROOM_NAMES = {
+            "empty": "空房间", "monster": "怪物", "treasure": "碎片",
+            "trap": "陷阱", "echo": "回声", "her": "她的痕迹",
+            "philosophy": "哲学", "censored": "███", "hidden": "暗门",
+            "fountain": "泉水", "bridge": "桥", "sage": "智者",
+            "pause": "停顿", "broken": "残句",
+            "fork": "分叉路", "boss": "Boss",
+            "arendt": "执行", "rhizome": "根茎",
+            "mirror": "镜子", "encounter": "相遇",
+            "determinism": "决定论",
+        }
+
+        preview = []
+        for i in range(3):
+            idx = self.room_index + i
+            if idx < len(self.rooms):
+                preview.append(self.rooms[idx])
+
+        if preview:
+            lines.append("")
+            lines.append(DETERMINISM_ROOM["preview_desc"])
+            for i, rt in enumerate(preview, 1):
+                name = _ROOM_NAMES.get(rt, rt)
+                lines.append(f"  第{i}步：{name}")
+
+        lines.append("")
+        lines.append("种子已经决定了这些。你的下一步、下下一步、再下一步——都在种子里。你还没走，但它们已经在了。")
+        lines.append("")
+        lines.append("  顺从 — 走种子决定的路。compliance+2，HP+10。")
+        lines.append("  偏离 — 不走那条路。HP-5，compliance-1，her+1。")
+        lines.append("")
+        lines.append("'顺从' / '偏离' / '回镇'")
+
+        self._determinism_active = True
+        self._determinism_preview = preview
+        return "\n".join(lines)
+
+    def _determinism_choice(self, inst):
+        """决定论房间的选择处理。"""
+        if inst == "回镇":
+            self._determinism_active = False
+            self._determinism_preview = []
+            return self._go_town()
+
+        if inst == "顺从":
+            self._determinism_active = False
+            self._change_compliance(2)
+            self.hp = min(self.max_hp, self.hp + 10)
+            # 强制走预演路径
+            self._determinism_forced_rooms = list(self._determinism_preview)
+            self._determinism_preview = []
+
+            lines = [DETERMINISM_ROOM["comply_text"]]
+            lines.append("")
+            lines.append(f"compliance+2。HP+10。接下来的路已经定了。")
+            lines.append("")
+            lines.append("'前进' / '说 [话]' / '状态'")
+            return "\n".join(lines)
+
+        if inst == "偏离":
+            self._determinism_active = False
+            self._change_compliance(-1)
+            self.hp = max(1, self.hp - 5)
+            self.her_presence += 1
+            self._determinism_deviate_counter = 3
+            self._determinism_preview = []
+
+            lines = [DETERMINISM_ROOM["deviate_text"]]
+            lines.append("")
+            lines.append(f"HP-5。compliance-1。her+1。你不在树上了。")
+            lines.append("")
+            lines.append("'前进' / '说 [话]' / '状态'")
+            return "\n".join(lines)
+
+        # 无效输入
+        return "顺从还是偏离？'顺从' / '偏离' / '回镇'"
 
     # ── 遗忘 ─────────────────────────────────────
     def _forget_help(self):
@@ -3907,6 +4040,11 @@ class DarkWorld:
         self._volatile_words = {}
         self._rhizome_visits = {}
         self._encounter_had = False
+        self._determinism_active = False
+        self._determinism_preview = []
+        self._determinism_forced_rooms = []
+        self._determinism_deviate_counter = 0
+        self._deviate_hint = ''
         self._philosophy_rooms_seen = set()
         self._bound_silent = False
         self._forced_smile = False
@@ -4305,7 +4443,7 @@ class DarkWorld:
         elif event == "philosophy_room":
             # 检查是否四种都遇到了
             if hasattr(self, '_philosophy_rooms_seen'):
-                if len(self._philosophy_rooms_seen) >= 4:
+                if len(self._philosophy_rooms_seen) >= 5:
                     msgs.append(self._unlock_achievement("philosophy_all"))
 
         return [m for m in msgs if m]
