@@ -88,7 +88,7 @@ def _compact_text(text):
         if stripped.startswith("'") and any(kw in stripped for kw in [
             '前进', '攻', '防', '术', '逃', '说', '状态', '回镇',
             '帮助', '新角', '确认', '词库', '任务', '遗忘', '用',
-            '重投', '来路', '买', '写', '喊', '求签', '祈祷',
+            '重投', '来路', '买', '写', '喊', '求签', '祈祷', '调',
         ]):
             continue
         if stripped.startswith('工会') and '出镇' in stripped:
@@ -124,7 +124,8 @@ async def list_tools():
             name="play",
             description=(
                 "执行词与物游戏指令。支持批量指令：'前进5'连走5步，'攻3'连攻3次，分号串联多条。\n\n"
-                "常见指令：新角/确认/前进/回镇/出镇/说/攻/防/术/逃/词库/状态/商店/买/残壁/写/塔/喊/酒馆/神殿/求签/广场/打工/用/脱出\n\n"
+                "常见指令：新角/确认/前进/回镇/出镇/说/攻/防/术/逃/词库/状态/商店/买/残壁/写/塔/喊/酒馆/神殿/求签/广场/打工/用/脱出\n"
+                "调 [词] [腔]：把词移到指定腔（喉/胸/壳/眼），腔影响词的共鸣效果\n\n"
                 "核心规则：不要自己做决定。讲给人类听当前场景，等他们说怎么做。"
                 "你可以建议（比如'这个词可以攻击'），但最终选择权在人类。"
             ),
@@ -223,7 +224,19 @@ async def call_tool(name, arguments):
         lines.append(f"HP: {hp}/{max_hp} | MP: {mp}/{max_mp}")
         lines.append(f"顺从: {compliance} | 饥饿: {hunger}")
         if words:
-            lines.append(f"词表: {', '.join(words)}")
+            word_chambers = state.get("word_chambers", {})
+            if word_chambers:
+                chamber_names = {"喉": "喉腔", "胸": "胸腔", "壳": "壳腔", "眼": "眼腔"}
+                word_info = []
+                for w in words:
+                    ch = word_chambers.get(w, "")
+                    if ch:
+                        word_info.append(f"{w}[{chamber_names.get(ch, ch)}]")
+                    else:
+                        word_info.append(w)
+                lines.append(f"词表: {', '.join(word_info)}")
+            else:
+                lines.append(f"词表: {', '.join(words)}")
 
         gold = state.get("gold", 0)
         if gold:
