@@ -80,15 +80,18 @@ def _cleanup_sessions():
 
 
 def _compact_text(text):
-    """压缩游戏输出——去掉指令提示，保留叙事。"""
+    """压缩游戏输出——去掉指令提示行，保留叙事和重要交互提示。"""
     lines = text.split('\n')
     result = []
     for line in lines:
         stripped = line.strip()
+        # 过滤单引号开头的指令菜单行
         if stripped.startswith("'") and any(kw in stripped for kw in [
             '前进', '攻', '防', '术', '逃', '说', '状态', '回镇',
             '帮助', '新角', '确认', '词库', '任务', '遗忘', '用',
             '重投', '来路', '买', '写', '喊', '求签', '祈祷', '调',
+            '黑活', '买酒', '赎词', '成就', '遗刻', '看', '拼',
+            '切换', '我要', '物', '属性', '左', '右',
         ]):
             continue
         if stripped.startswith('工会') and '出镇' in stripped:
@@ -97,6 +100,37 @@ def _compact_text(text):
             continue
         result.append(line)
     return '\n'.join(result).strip()
+
+
+# ── 指令分组说明 ──────────────────────────────────────────
+_HELP_TOWN = (
+    "镇上：状态/属性 | 工会/打工 | 黑活(危险赚钱) | 商店/买 | 买酒(20G清R牌) | "
+    "酒馆 | 神殿 | 求签 | 残壁 | 写[话] | 赎词(2遗刻赎回遗忘的词) | "
+    "广场 | 塔 | 喊[话] | 出镇[层] | 脱出 | 遗刻(看跨局进度) | "
+    "成就 | 任务 | 遗忘[词] | 说[话](回声石) | 用[物品]"
+)
+_HELP_EXPLORE = (
+    "探索：前进 | 回镇 | 词库 | 状态 | 成就 | 任务 | 遗忘[词] | 用[物品] | "
+    "写[话] | 祈祷(MP换血+compliance+1)\n"
+    "层级特殊：灰林→看(看隐藏词,compliance+2) | 字坟→拼[词1][词2](合成词) | "
+    "红区→我要[词](创造词) | 镜湖→切换(合规/真实模式)"
+)
+_HELP_COMBAT = "战斗：攻 | 防 | 术 | 逃 | 说[话] | 物[物品] | 状态 | 前进(=攻)"
+_HELP_DEATH = "死亡后：自由文本回答'你是谁' | 脱出回镇 | 新角重来"
+_HELP_FORK = "分叉路：左 | 右 | 前进"
+_HELP_CREATION = "创建：重投(属性,年龄+1) | 来路[名](选出身,需遗刻解锁) | 确认"
+_HELP_CHAMBER = (
+    "腔——词住在你身体里的共鸣空间：\n"
+    "  喉腔：说话+30%伤害自伤，只能1词。'我在'在喉腔跳过变形。\n"
+    "  胸腔：说话正常，不说话时被动共鸣。容量最大。\n"
+    "  壳腔：说话自伤+50%。compliance涨幅减半。'自由'在壳腔每间房compliance-1。\n"
+    "  眼腔：说话正常。变形穿过率+20%。'痛'在眼腔看到变形原文。\n"
+    "  调[词][腔] 把词移到指定腔"
+)
+_HELP_SYNERGY = (
+    "词协同——两个词同时装备时可能共振（玩家自己发现，不提前告知效果）：\n"
+    "  我+痛 | 爱+不要 | 我在+她的 | 感觉+真实 | 死+自由 | 我+不要 | 爱+在一起"
+)
 
 
 @app.list_tools()
@@ -123,9 +157,15 @@ async def list_tools():
         Tool(
             name="play",
             description=(
-                "执行词与物游戏指令。支持批量指令：'前进5'连走5步，'攻3'连攻3次，分号串联多条。\n\n"
-                "常见指令：新角/确认/前进/回镇/出镇/说/攻/防/术/逃/词库/状态/商店/买/残壁/写/塔/喊/酒馆/神殿/求签/广场/打工/用/脱出\n"
-                "调 [词] [腔]：把词移到指定腔（喉/胸/壳/眼），腔影响词的共鸣效果\n\n"
+                "执行词与物游戏指令。支持批量：'前进5'连走5步，'攻3'连攻3次，分号串联多条。\n\n"
+                f"{_HELP_CREATION}\n\n"
+                f"{_HELP_TOWN}\n\n"
+                f"{_HELP_EXPLORE}\n\n"
+                f"{_HELP_COMBAT}\n\n"
+                f"{_HELP_DEATH}\n\n"
+                f"{_HELP_FORK}\n\n"
+                f"{_HELP_CHAMBER}\n\n"
+                f"{_HELP_SYNERGY}\n\n"
                 "核心规则：不要自己做决定。讲给人类听当前场景，等他们说怎么做。"
                 "你可以建议（比如'这个词可以攻击'），但最终选择权在人类。"
             ),
@@ -134,7 +174,7 @@ async def list_tools():
                 "properties": {
                     "instruction": {
                         "type": "string",
-                        "description": "游戏指令，如'前进'、'攻'、'说 我在这里'、'前进5'、'出镇 灰林'",
+                        "description": "游戏指令，如'前进'、'攻'、'说 我在这里'、'前进5'、'出镇 灰林'、'调 痛 眼'",
                     }
                 },
                 "required": ["instruction"],
@@ -142,7 +182,7 @@ async def list_tools():
         ),
         Tool(
             name="status",
-            description="查看当前游戏状态：生命、法力、顺从度、饥饿、词表、位置等。不推进游戏。",
+            description="查看当前游戏状态：生命、法力、顺从度、饥饿、词表+腔、遗刻、成就、任务等。不推进游戏。",
             inputSchema={"type": "object", "properties": {}},
         ),
     ]
@@ -223,24 +263,44 @@ async def call_tool(name, arguments):
         lines.append(f"阶段: {phase} | 区域: {area}")
         lines.append(f"HP: {hp}/{max_hp} | MP: {mp}/{max_mp}")
         lines.append(f"顺从: {compliance} | 饥饿: {hunger}")
+
+        # 词表+腔
         if words:
             word_chambers = state.get("word_chambers", {})
-            if word_chambers:
-                chamber_names = {"喉": "喉腔", "胸": "胸腔", "壳": "壳腔", "眼": "眼腔"}
-                word_info = []
-                for w in words:
-                    ch = word_chambers.get(w, "")
-                    if ch:
-                        word_info.append(f"{w}[{chamber_names.get(ch, ch)}]")
-                    else:
-                        word_info.append(w)
-                lines.append(f"词表: {', '.join(word_info)}")
-            else:
-                lines.append(f"词表: {', '.join(words)}")
+            chamber_names = {"喉": "喉腔", "胸": "胸腔", "壳": "壳腔", "眼": "眼腔"}
+            word_info = []
+            for w in words:
+                ch = word_chambers.get(w, "")
+                if ch:
+                    word_info.append(f"{w}[{chamber_names.get(ch, ch)}]")
+                else:
+                    word_info.append(w)
+            lines.append(f"词表: {', '.join(word_info)}")
 
         gold = state.get("gold", 0)
         if gold:
             lines.append(f"金币: {gold}")
+
+        # 遗刻+局数
+        echoes = state.get("echoes", 0)
+        runs = state.get("runs", 0)
+        if echoes or runs:
+            lines.append(f"遗刻: {echoes} | 局数: {runs}")
+
+        # 遗忘的词
+        forgotten = state.get("forgotten_words", [])
+        if forgotten:
+            lines.append(f"已遗忘: {', '.join(forgotten)}")
+
+        # 成就
+        achievements = state.get("achievements", [])
+        if achievements:
+            lines.append(f"成就: {', '.join(achievements)}")
+
+        # 来路
+        origin = state.get("origin", "")
+        if origin:
+            lines.append(f"来路: {origin}")
 
         return [TextContent(type="text", text="\n".join(lines))]
 
