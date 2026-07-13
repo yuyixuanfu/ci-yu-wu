@@ -4466,17 +4466,91 @@ class DarkWorld:
         return "\n".join(lines)
 
     def _write_ending_file(self, text, ending_type):
-        """结局写进文件——人类下次打开文件夹能看到。"""
+        """结局写进文件 + 生成通关报告。
+        ending.txt: 人类下次打开文件夹能看到结局文本。
+        ciyuwu_report.json: 通关报告（死亡次数/说过的词/变形链/被吞表达/结局）——玩家可分享。"""
+        # ── 1. 原结尾文本 + 附表达腐烂记录 ──
+        report_lines = self._build_drift_record()
+        full_text = text
+        if report_lines:
+            full_text += "\n\n" + "\n".join(report_lines)
+
         ending_file = os.path.join(_HERE, "ending.txt")
         try:
             with open(ending_file, "w", encoding="utf-8") as f:
                 f.write(f"结局：{ending_type}\n")
                 f.write(f"第{self.runs}局\n")
                 f.write("\n")
-                f.write(text)
+                f.write(full_text)
                 f.write("\n")
         except:
             pass
+
+        # ── 2. 通关报告 JSON ──
+        try:
+            report = self._build_ending_report(ending_type, text)
+            report_file = os.path.join(_HERE, "ciyuwu_report.json")
+            tmp = report_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(report, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, report_file)
+        except:
+            pass
+
+    def _build_drift_record(self):
+        """②表达腐烂记录：每个词最初是什么→被改成了什么→哪条路径。
+        盲玩时不知道就是力量，通关后回看整条变形链让体验完整。"""
+        lines = ["", "═══ 表达腐烂记录 ═══", ""]
+        drifted = getattr(self, '_drifted_words', {})
+        self_drifted = getattr(self, '_self_drifted_words', {})
+        seen = getattr(self, 'deformations_seen', [])
+
+        if drifted:
+            lines.append("【被偷换的词】")
+            for new_w, orig_w in drifted.items():
+                lines.append(f"  {orig_w} → {new_w}")
+        if self_drifted:
+            if drifted: lines.append("")
+            lines.append("【自己软化的词】")
+            for orig_w, soft_w in self_drifted.items():
+                lines.append(f"  {orig_w} → {soft_w}")
+        if seen:
+            if drifted or self_drifted: lines.append("")
+            lines.append("【被变形/吞掉的表达】")
+            for s in seen:
+                lines.append(f"  {s}")
+
+        if not (drifted or self_drifted or seen):
+            lines.append("（没有发生变形。你还是你。）")
+        return lines
+
+    def _build_ending_report(self, ending_type, ending_text):
+        """③可导出通关报告：死亡次数/重要回答/说过的词/被吞表达/结局。
+        玩家通关后可与别人分享自己的路线。"""
+        import datetime as _dt
+        return {
+            "结局": ending_type,
+            "局数_死亡次数": getattr(self, 'runs', 0),
+            "遗刻_echoes": getattr(self, 'echoes', 0),
+            "她在场_her_presence": getattr(self, 'her_presence', 0),
+            "R牌色_r_flags": getattr(self, 'r_flags', 0),
+            "总消音词次数_total_wait": getattr(self, 'total_wait', 0),
+            "跨局总变形_cross_deform": getattr(self, 'cross_deform_count', 0),
+            "跨局总被吞_cross_swallow": getattr(self, 'cross_swallow_count', 0),
+            "本局说过的词": getattr(self, 'words', []),
+            "词频_本局": getattr(self, 'words_spoken', {}),
+            "跨局词统计": getattr(self, 'cross_word_stats', {}),
+            "被偷换的词_新→原": getattr(self, '_drifted_words', {}),
+            "自己软化的词_原→软": getattr(self, '_self_drifted_words', {}),
+            "被变形吞掉的表达": getattr(self, 'deformations_seen', []),
+            "杀过的boss": getattr(self, 'killed_bosses', []),
+            "解锁的来路": getattr(self, 'unlocked_origins', []),
+            "解锁的成就": getattr(self, 'unlocked_achievements', []),
+            "墙上字": getattr(self, 'wall_writings', []),
+            "游戏日记": getattr(self, 'game_diary', []),
+            "结局文本": ending_text,
+            "生成时间": _dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
 
     def _ending(self):
         self.phase = "ending"

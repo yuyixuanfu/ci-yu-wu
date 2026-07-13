@@ -351,8 +351,9 @@ def cmd(state, instruction):
                 if w.phase == "ending":
                     break
                 # 战斗中死亡/回镇/进交互就停
+                # combat也停——批量前进遇战斗暂停，让玩家看清遭遇再决定（网友建议①）
                 if w.phase in ("dead", "dead_who", "dead_wipe", "void", "town",
-                               "judgment", "fork", "creation", "init"):
+                               "judgment", "fork", "creation", "init", "combat"):
                     break
             if count > 3:
                 # 多步汇总：只显示首尾和状态变化
