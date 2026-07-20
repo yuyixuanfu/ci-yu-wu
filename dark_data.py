@@ -1902,8 +1902,9 @@ def pick_pickup(area=None, her_presence=0):
     # 坏碎片 15%
     if roll2 < 0.15:
         return random.choice(PICKUPS["bad"])
-    # 她的物件
-    her_chance = 0.02 + her_presence * 0.015
+    # 她的物件——BUG-24 修复：her_chance 上限 clamp 到 0.4
+    # 避免 her>=99 时累加 >1.49 吞掉所有其他阈值导致 her_things 刷屏
+    her_chance = min(0.4, 0.02 + her_presence * 0.015)
     if roll2 < 0.15 + her_chance:
         return random.choice(PICKUPS["her_things"])
     # 前人遗物 20%

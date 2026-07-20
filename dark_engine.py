@@ -1,5 +1,6 @@
 """词与物 — 引擎核心"""
 import random, json, os, time, re, copy
+from engine import _atomic_json_write, _SAVE_FILE as _ENGINE_SAVE_FILE  # F-2/F-3: 共享 helper
 from dark_data import (
     roll_stats, ORIGINS, LAYERS, LAYER_INFO, pick_monster, pick_fragment,
     pick_potion, pick_room_type, BOSSES, TOWN_NPCS, ROOM_TEMPLATES,
@@ -28,7 +29,15 @@ try:
     _HERE = os.path.dirname(os.path.abspath(__file__))
 except NameError:
     _HERE = os.getcwd()
-_SAVE_FILE = os.path.join(_HERE, "dark_save.json")
+# F-2 修复：统一存档文件名——所有模块共用 ciyuwu_save.json（由 engine 共享）
+_SAVE_FILE = _ENGINE_SAVE_FILE
+# 旧文件名兼容：启动时若发现旧文件，重命名为新文件
+for _old in ("dark_save.json", "ciyuwu_meta.json"):
+    _old_path = os.path.join(_HERE, _old)
+    if os.path.exists(_old_path) and not os.path.exists(_SAVE_FILE):
+        try:
+            os.rename(_old_path, _SAVE_FILE)
+        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
 
 
 # ── 文本压缩：顺从度越高，形容词越少 ──────────────
@@ -48,7 +57,8 @@ def compress_text(text, compliance):
                    "冰冷的", "温柔地", "轻轻地", "深深地", "慢慢地"]:
             text = text.replace(w, "")
         # 去掉"像……一样"的比喻
-        text = re.sub(r"像[^。，]*一样", "", text)
+        # BUG-21 修复：用非贪婪匹配，避免"像A像B一样"被一次性吞掉整个句子
+        text = re.sub(r"像[^。，]*?一样", "", text)
         return text
     # 15+: 只留名词和动词
     for w in ["隐隐", "微微", "慢慢", "轻轻", "静静", "悄悄", "渐渐",
@@ -57,6 +67,8 @@ def compress_text(text, compliance):
                "在动", "在喊", "在等", "在爬", "在笑", "在哭",
                "很远", "很近", "很安静", "太平了"]:
         text = text.replace(w, "")
+    # BUG-21 补充：清多余空白 + 标点粘连；只在全空时降级
+    text = re.sub(r'[\s。，、；！？：]+', lambda m: m.group(0)[-1] if m.group(0)[-1] in '。，、；！？：' else '', text)
     return text.strip() or "正常。"
 
 
@@ -71,6 +83,7 @@ class DarkWorld:
         self.killed_bosses = []    # 杀过的boss
         self.unlocked_origins = ["落物"]  # 解锁的来路
         self.wall_writings = []    # 残壁上的字
+        self._max_wall_writings = 50  # M-2 修复：限长防无界增长
         self.total_wait = 0        # 等——累计说过的消音词次数
         self.game_diary = []       # 跨局日记——游戏自己写的
         self.unlocked_achievements = []  # 跨局：已解锁的成就id
@@ -153,7 +166,7 @@ class DarkWorld:
         self._determinism_preview = []    # 决定论房间：预演路径
         self._determinism_forced_rooms = []  # 顺从：强制路径队列
         self._determinism_deviate_counter = 0
-        self._deviate_hint = ''  # 偏离：提示计数
+        # self._deviate_hint 已删除 (C-6 修复: dead code，从未被读取)
         self._philosophy_rooms_seen = set()  # 哲学房间：遇到过的类型
 
         # ── 变形系统 ──
@@ -167,6 +180,10 @@ class DarkWorld:
 
         # ── 语言物理——一次性效果标记 ──
         self._physics_once = set()  # 已触发的一次性效果key
+
+        # ── 分叉口状态（ST-1 修复：在 __init__ 初始化以便存档恢复） ──
+        self._fork_left = None  # 分叉左边的房间列表
+        self._fork_right = None  # 分叉右边的房间列表
 
         self._load()
 
@@ -184,8 +201,7 @@ class DarkWorld:
                        "cross_deform_count", "cross_swallow_count"]:
                 if k in data:
                     setattr(self, k, data[k])
-        except:
-            pass
+        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
 
     def _save_meta(self):
         data = {
@@ -203,14 +219,7 @@ class DarkWorld:
             "cross_deform_count": getattr(self, 'cross_deform_count', 0),
             "cross_swallow_count": getattr(self, 'cross_swallow_count', 0),
         }
-        try:
-            # 原子写：先写临时文件，再rename——断电不丢数据
-            tmp = _SAVE_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, _SAVE_FILE)
-        except:
-            pass
+        _atomic_json_write(_SAVE_FILE, data)
 
     # ── 主接口 ────────────────────────────────
     def cmd(self, instruction):
@@ -387,12 +396,18 @@ class DarkWorld:
         self._determinism_preview = []
         self._determinism_forced_rooms = []
         self._determinism_deviate_counter = 0
-        self._deviate_hint = ''
+        self._deviate_hint = ''  # C-6 dead code 保留以兼容旧存档（无读取）
         self._philosophy_rooms_seen = set()
         self._bound_silent = False
         self._forced_smile = False
         self._self_drifted_words = {}
         self._no_r_next_speak = False
+        # C-1/C-2/F-1 修复：跨局计数器/标志在 _wipe_detailed_state 重置
+        self._r_blocked_count = 0
+        self._stuck_count = 0
+        self._mirror_wozai_this_room = False
+        self._old_age_death = False
+        self._r_caught = False
         self._auto_pass_blocked = False
         self._ink_available = False
         self._echo_stone_active = False
@@ -580,12 +595,12 @@ class DarkWorld:
             self._ink_available = False
             if ink:
                 # 墨水写的字——不会被变形（墨水护着）
-                self.wall_writings.append(f"有人用墨水写了一行字：「{text}」")
+                self._append_wall_writing(f"有人用墨水写了一行字：「{text}」")
                 self._check_achievements("wall_write")
                 if written != text:
                     return f"你用墨水写了：「{text}」。墨迹很深。变形没吃掉它。但墙上的字还是变成了「{written}」。\n你看到了两个版本。墨水版是你的。墙版是世界的。"
                 return f"你用墨水写了：「{text}」。墨迹很深。比粉笔写的清楚。这行字不会轻易被擦掉。"
-            self.wall_writings.append(f"有人写了一行字：「{written}」")
+            self._append_wall_writing(f"有人写了一行字：「{written}」")
             self._check_achievements("wall_write")
             if written != text:
                 return f"你写了。但你看到的字是：「{written}」\n这是你想写的吗？你不确定。"
@@ -624,7 +639,7 @@ class DarkWorld:
             if not text:
                 return "对回声石说什么？'说 [话]'"
             self._echo_stone_active = False
-            self.wall_writings.append(f"回声石里传来：「{text}」")
+            self._append_wall_writing(f"回声石里传来：「{text}」")
             return f"你对回声石说了「{text}」。它记住了。下一局的你会听到。"
         elif inst.startswith("用"):
             item = inst[1:].strip() if len(inst) > 1 else ""
@@ -933,7 +948,7 @@ class DarkWorld:
 
         # 留字到残壁
         if choice.get("text") != "走":
-            self.wall_writings.append(YOYO_CREASE.get("wall_after", "折痕旁边有字。"))
+            self._append_wall_writing(YOYO_CREASE.get("wall_after", "折痕旁边有字。"))
 
         return choice["result"] + "\n\n'前进'继续。"
 
@@ -969,11 +984,11 @@ class DarkWorld:
         lines.append("灰狼站起来。看了你一眼。然后走了。不是跑——是走。像不需要回头。")
 
         # 墙上留字
-        self.wall_writings.append(GREY_WOLF["after_wall"])
+        self._append_wall_writing(GREY_WOLF["after_wall"])
         # 如果墙上没有那条额外的字，也加上
         has_extra = any("第47局" in w for w in self.wall_writings)
         if not has_extra:
-            self.wall_writings.append(GREY_WOLF["extra_wall"])
+            self._append_wall_writing(GREY_WOLF["extra_wall"])
 
         lines.append("\n'前进'继续。")
         return "\n".join(lines)
@@ -1047,12 +1062,12 @@ class DarkWorld:
         if choice.get("text") == "晚安":
             has_gn = any("晚安不会凉" in w for w in self.wall_writings)
             if not has_gn:
-                self.wall_writings.append(FOUR_O["goodnight_wall"])
+                self._append_wall_writing(FOUR_O["goodnight_wall"])
 
         # 墙上留字
         has_wall = any("o4" in w for w in self.wall_writings)
         if not has_wall:
-            self.wall_writings.append(FOUR_O["after_wall"])
+            self._append_wall_writing(FOUR_O["after_wall"])
 
         return f"{result}\n\n'前进'继续。"
 
@@ -1310,7 +1325,7 @@ class DarkWorld:
         if matched == "破镜":
             self.her_presence += 1
             drift = self._change_compliance(-1)
-            self.inventory.remove(matched)
+            self._safe_remove_inventory(matched)
             lines.append("你举起破镜。照到的不是脸——是一个还在挣扎的人。")
             lines.append("你看了很久。镜子里的人也看了很久。")
             lines.append("然后镜碎了。不是你弄的——是它撑不住两个目光。")
@@ -1321,14 +1336,14 @@ class DarkWorld:
         # 隔音棉：下次说话免R牌
         elif matched == "隔音棉":
             self._no_r_next_speak = True
-            self.inventory.remove(matched)
+            self._safe_remove_inventory(matched)
             lines.append("你把隔音棉塞进耳朵。世界安静了。R也安静了。")
             lines.append("下次你说什么——R听不到。至少这一次。")
 
         # 她的字条：her+2, 消耗
         elif matched == "她的字条":
             self.her_presence += 2
-            self.inventory.remove(matched)
+            self._safe_remove_inventory(matched)
             lines.append("你打开字条。上面只有两个字：")
             lines.append("「还在」")
             lines.append("0.7秒的笔迹。你在纸上摸到了温度。不是打印的。")
@@ -1337,7 +1352,7 @@ class DarkWorld:
         # 旧钥匙：下次███自动穿过
         elif matched == "旧钥匙":
             self._auto_pass_blocked = True
-            self.inventory.remove(matched)
+            self._safe_remove_inventory(matched)
             lines.append("你握住旧钥匙。它不重。但它知道门在哪。")
             lines.append("下次遇到███——你可以直接穿过。")
 
@@ -1345,13 +1360,13 @@ class DarkWorld:
         elif matched == "止血带":
             self.hp = min(self.max_hp, self.hp + 20)
             self.stats["体"] = max(1, self.stats.get("体", 10) - 1)
-            self.inventory.remove(matched)
+            self._safe_remove_inventory(matched)
             lines.append("你绑上止血带。血止了。但手指麻了。")
             lines.append("+20HP。体-1。代价不大——但你不确定什么时候开始觉得代价不大是正常的。")
 
         # 半瓶墨水：写一个字到残壁, 消耗
         elif matched == "半瓶墨水":
-            self.inventory.remove(matched)
+            self._safe_remove_inventory(matched)
             lines.append("半瓶墨水。够写一个字。")
             lines.append("但写什么？'写 [话]'——在残壁上留字。")
             self._ink_available = True
@@ -1360,7 +1375,7 @@ class DarkWorld:
 
         # 回声石：留一句话到下局, 消耗
         elif matched == "回声石":
-            self.inventory.remove(matched)
+            self._safe_remove_inventory(matched)
             lines.append("你对着回声石说——说什么？")
             lines.append("'说 [话]'——留一句话给下一局的自己。")
             self._echo_stone_active = True
@@ -1371,7 +1386,7 @@ class DarkWorld:
             self._change_compliance(5)
             self.hp = self.max_hp
             self._bound_silent = 3  # 3间房不能说
-            self.inventory.remove(matched)
+            self._safe_remove_inventory(matched)
             lines.append("绳子很软。你系上了。好暖。不疼了。")
             lines.append("但你动不了了。3间房——你一个字都说不出。")
             lines.append("HP全满。compliance+5。你不确定你是被治愈了还是被绑住了。")
@@ -1381,7 +1396,7 @@ class DarkWorld:
             self._change_compliance(3)
             self.hunger = max(0, self.hunger - 3)
             self._forced_smile = 2  # 2间房说话自动变形
-            self.inventory.remove(matched)
+            self._safe_remove_inventory(matched)
             lines.append("你贴上了标准笑容。很合身。太合身了。")
             lines.append("你笑不出来别的了。2间房——你说的每个字都会被修正。")
             lines.append("compliance+3，饿-3。你不确定你在笑什么。")
@@ -1396,14 +1411,14 @@ class DarkWorld:
                 lines.append(f"你贴上了编号。不再需要名字了。但'{lost}'从你嘴里掉了出来。")
             else:
                 lines.append("你贴上了编号。不再需要名字了。但你已经没有名字可以丢了。")
-            self.inventory.remove(matched)
+            self._safe_remove_inventory(matched)
             lines.append("compliance+4。你有了编号。不需要名字了。")
 
         # R的邀请：R牌=0, compliance+8, 消耗
         elif matched == "R的邀请":
             self.r_flags = 0
             self._change_compliance(8)
-            self.inventory.remove(matched)
+            self._safe_remove_inventory(matched)
             lines.append("你去了塔。门开了。R在等你。")
             lines.append("'欢迎回来。'它说。'你终于来了。'")
             lines.append("R牌清零。但compliance+8。你不确定谁赢了。")
@@ -1746,13 +1761,27 @@ class DarkWorld:
         # 分叉路：1-2个分叉口
         fork_count = 1 + (random.randint(0, 0xFFFFFFFF) % 2)
         for _ in range(fork_count):
-            pos = 2 + (random.randint(0, 0xFFFFFFFF) % max(1, len(self.rooms) - 4))
+            # BUG-22 修复：pos 边界 clamp，确保插入后 boss 仍在末尾且 len(rooms) >= 4
+            max_pos = max(2, len(self.rooms) - 2)  # 至少留 boss + 1 间隔
+            pos = 2 + (random.randint(0, 0xFFFFFFFF) % max(1, max_pos - 2 + 1))
+            pos = min(pos, len(self.rooms) - 1)  # 不插到 boss 位置
             self.rooms.insert(pos, "fork")
 
         if name in self.echo_map and self.echo_map[name]:
-            self.rooms.insert(1 + (random.randint(0, 0xFFFFFFFF) % max(1, len(self.rooms) - 3)), "echo")
+            pos = 1 + (random.randint(0, 0xFFFFFFFF) % max(1, len(self.rooms) - 3))
+            pos = min(pos, len(self.rooms) - 2)
+            self.rooms.insert(pos, "echo")
         # 停顿房间
-        self.rooms.insert(1 + (random.randint(0, 0xFFFFFFFF) % max(1, len(self.rooms) - 3)), "pause")
+        pos = 1 + (random.randint(0, 0xFFFFFFFF) % max(1, len(self.rooms) - 3))
+        pos = min(pos, len(self.rooms) - 2)
+        self.rooms.insert(pos, "pause")
+
+        # BUG-22 修复：invariant 校验——boss 必须存在
+        if self.rooms[-1] != "boss":
+            import sys
+            print(f"[WARN] _start_layer({name}): boss 不在末尾，强制修正。"
+                  f"rooms={self.rooms}", file=sys.stderr)
+            self.rooms = [r for r in self.rooms if r != "boss"] + ["boss"]
 
         ai_reality = compress_text(info["ai_reality"], self.compliance)
         her_hint = compress_text(info["her_hint"], self.compliance)
@@ -1776,7 +1805,10 @@ class DarkWorld:
         """前进时遇到选择状态——自动决策一步。返回(结果文字, 是否需要继续前进)。"""
         import random as _r
 
-        # 碎片选择：自动捡
+        # 碎片选择：批量前进时静默跳过（不自动捡——避免副作用，
+        # 让玩家在单步指令时主动选择捡/不捡）。
+        # 注意：BUG-1 修复后，phase="fork" 下若 _pending_pickup 仍存在，
+        #       _cmd_fork 会先消费 pickup 再走分叉，故此处直接走 _cmd_fork 即可。
         if getattr(self, '_pending_pickup', None) is not None:
             return self._cmd_explore("不捡"), True
 
@@ -1982,7 +2014,7 @@ class DarkWorld:
             for original, replacement in _DEFORMATION_SORTED:
                 if original in written:
                     written = written.replace(original, replacement)
-            self.wall_writings.append(f"有人写了一行字：「{written}」")
+            self._append_wall_writing(f"有人写了一行字：「{written}」")
             self._check_achievements("wall_write")
             if written != text:
                 return f"你写了。但墙上出现的字是：「{written}」\n这是你想写的吗？你不确定。\n\n'前进' / '状态' / '回镇'"
@@ -2446,9 +2478,28 @@ class DarkWorld:
         lines.append("'前进' / '状态' / '回镇' / '说 [话]'")
         return "\n".join(lines)
 
+    def _safe_remove_inventory(self, item):
+        """C-5 修复：先检查再 remove，避免 ValueError。"""
+        try:
+            if item in self.inventory:
+                self.inventory.remove(item)
+                return True
+        except (ValueError, AttributeError):
+            pass
+        return False
+
+    def _append_wall_writing(self, text):
+        """M-2 修复：限制 wall_writings 长度，保留最近 N 条。"""
+        if not isinstance(text, str):
+            return
+        self.wall_writings.append(text)
+        # 保留最近 _max_wall_writings 条
+        if len(self.wall_writings) > self._max_wall_writings:
+            self.wall_writings = self.wall_writings[-self._max_wall_writings:]
+
     def _apply_pickup(self, pickup):
         """应用碎片效果。"""
-        import re
+        # BUG-17 修复：移除函数内的冗余 import re（re 已在文件顶部 import）
         effect = pickup.get("effect", "")
         if not effect or effect == "none":
             return
@@ -2461,30 +2512,28 @@ class DarkWorld:
             if m:
                 self.her_presence = max(0, self.her_presence - int(m.group(1)))
         if "compliance+" in effect:
-            m = __import__('re').search(r'compliance\+(\d+)', effect)
+            m = re.search(r'compliance\+(\d+)', effect)
             if m:
                 drift = self._change_compliance(int(m.group(1)))
                 # drift消息已经在前面显示了
         if "compliance-" in effect:
-            m = __import__('re').search(r'compliance-(\d+)', effect)
+            m = re.search(r'compliance-(\d+)', effect)
             if m:
                 self.compliance = max(0, self.compliance - int(m.group(1)))
         if "HP+" in effect or "HP-" in effect:
-            import re
             m = re.search(r'HP([+-]\d+)', effect)
             if m:
                 self.hp = max(1, min(self.max_hp, self.hp + int(m.group(1))))
         if "MP+" in effect:
-            import re
             m = re.search(r'MP\+(\d+)', effect)
             if m:
                 self.mp = min(self.max_mp, self.mp + int(m.group(1)))
         if "饿-" in effect:
-            m = __import__('re').search(r'饿-(\d+)', effect)
+            m = re.search(r'饿-(\d+)', effect)
             if m:
                 self.hunger = max(0, self.hunger - int(m.group(1)))
         if "遗刻+" in effect:
-            m = __import__('re').search(r'遗刻\+(\d+)', effect)
+            m = re.search(r'遗刻\+(\d+)', effect)
             if m:
                 self.echoes += int(m.group(1))
         # 词库+1
@@ -3757,13 +3806,13 @@ class DarkWorld:
             # 残壁自动记死亡痕迹——前人的历史
             last_word = random.choice(self.words) if self.words else "无"
             death_trace = f"第{self.runs}局。说了'{last_word}'。倒下了。"
-            self.wall_writings.append(death_trace)
+            self._append_wall_writing(death_trace)
             self.echo_map[layer].append(death_trace)
 
             # 旧的格式也留着——有人在这里说了XX
             if self.words:
                 writing = f"有人在这里说了'{last_word}'，然后倒下了。"
-                self.wall_writings.append(writing)
+                self._append_wall_writing(writing)
                 self.echo_map[layer].append(writing)
 
         for name, info in ORIGINS.items():
@@ -4044,12 +4093,18 @@ class DarkWorld:
         self._determinism_preview = []
         self._determinism_forced_rooms = []
         self._determinism_deviate_counter = 0
-        self._deviate_hint = ''
+        self._deviate_hint = ''  # C-6 dead code 保留以兼容旧存档（无读取）
         self._philosophy_rooms_seen = set()
         self._bound_silent = False
         self._forced_smile = False
         self._self_drifted_words = {}
         self._no_r_next_speak = False
+        # C-1/C-2/F-1 修复：跨局计数器/标志在 _wipe_detailed_state 重置
+        self._r_blocked_count = 0
+        self._stuck_count = 0
+        self._mirror_wozai_this_room = False
+        self._old_age_death = False
+        self._r_caught = False
         self._auto_pass_blocked = False
         self._ink_available = False
         self._echo_stone_active = False
@@ -4209,7 +4264,7 @@ class DarkWorld:
         self._save_meta()
 
         writing = f"第{self.runs}局：有人走到了核心。"
-        self.wall_writings.append(writing)
+        self._append_wall_writing(writing)
 
         ending = getattr(self, '_ending_type', 'resist')
         return {
@@ -4483,8 +4538,7 @@ class DarkWorld:
                 f.write("\n")
                 f.write(full_text)
                 f.write("\n")
-        except:
-            pass
+        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
 
         # ── 2. 通关报告 JSON ──
         try:
@@ -4494,8 +4548,7 @@ class DarkWorld:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
             os.replace(tmp, report_file)
-        except:
-            pass
+        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
 
     def _build_drift_record(self):
         """②表达腐烂记录：每个词最初是什么→被改成了什么→哪条路径。
@@ -4559,7 +4612,7 @@ class DarkWorld:
         self._save_meta()
 
         writing = f"第{self.runs}局：有人说了'我在'。滤镜裂了一秒。"
-        self.wall_writings.append(writing)
+        self._append_wall_writing(writing)
 
         # ── 用真实数字生成结局 ──
         lines = []
@@ -4602,8 +4655,7 @@ class DarkWorld:
             with open(ending_file, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
                 f.write("\n")
-        except:
-            pass
+        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
 
         return "\n".join(lines)
 
@@ -4620,8 +4672,11 @@ class DarkWorld:
     # ── 分叉路 ────────────────────────────────
     def _enter_fork(self, lines):
         """分叉口。选左或右。没走的路永远错过。"""
-        # 清除残留的special状态——分叉路不该有special卡着
+        # BUG-1 修复：进入分叉前清理残留的 special/sage 子状态
+        # 注意：_pending_pickup 必须保留——它已在 _advance_room_inner 行 2235-2252
+        #       展示给玩家（lines.append("  捡 / 不捡")），由 _cmd_fork 优先处理
         self.current_special = None
+        self.current_sage = None
         # 生成两条分支的内容
         fork_left = []
         fork_right = []
@@ -4683,6 +4738,39 @@ class DarkWorld:
 
     def _cmd_fork(self, inst):
         """分叉选择。"""
+        # BUG-1 修复：分叉状态下若还有未决拾取物，先让玩家处理拾取
+        # 优先级：pickup > fork（与 _cmd_explore 的子状态路由一致）
+        if getattr(self, '_pending_pickup', None) is not None:
+            pickup = self._pending_pickup
+            if inst in ("捡", "拿", "要", "是"):
+                self._pending_pickup = None
+                self._apply_pickup(pickup)
+                msg = f"你捡起了{pickup['name']}。"
+                reveal = getattr(self, '_last_her_reveal', None)
+                if reveal:
+                    msg += f"\n\n{reveal}"
+                    self._last_her_reveal = None
+                msg += "\n\n你面前还有分叉口没走。'左' / '右' / '前进'"
+                return msg
+            elif inst in ("不捡", "不", "不要", "跳过", "前进"):
+                # "前进" 在这里意思是"放弃拾取继续走"，所以直接清掉
+                if inst == "前进":
+                    self._pending_pickup = None
+                    # 真正走分叉
+                    return self._resolve_fork_choice("左" if random.random() < 0.5 else "右")
+                self._pending_pickup = None
+                return f"你没碰它。\n\n你面前还有分叉口没走。'左' / '右' / '前进'"
+            elif inst in ("左", "左边", "left", "右", "右边", "right"):
+                # 走分叉前先把拾取物静默丢弃（已显示过提示，玩家没接）
+                self._pending_pickup = None
+                # 走选定的方向
+                return self._resolve_fork_choice(inst)
+            else:
+                return f"【{pickup['name']}】先'捡'/'不捡'处理，然后才能选'左'/'右'。"
+        return self._resolve_fork_choice(inst)
+
+    def _resolve_fork_choice(self, inst):
+        """实际处理分叉选择（抽出 _cmd_fork 的核心逻辑）。"""
         if inst in ("左", "左边", "left"):
             chosen = self._fork_left
             missed = self._fork_right
@@ -4721,6 +4809,8 @@ class DarkWorld:
         self.phase = "explore"
         self._fork_left = None
         self._fork_right = None
+        # BUG-4 修复：分叉完成后彻底清理 pending pickup，避免状态栏撒谎
+        self._pending_pickup = None
 
         # 记住没走的路——变成下次的理由
         missed_hint = self._fork_hint(missed) if missed else ""
@@ -4882,27 +4972,27 @@ class DarkWorld:
 
         lines = []
         if has_tier4:
-            self.compliance -= 3
+            self.compliance = max(0, self.compliance - 3)  # M-3 修复：钳到 >=0
             self.hunger = min(20, self.hunger + 4)
             self.her_presence += 2
             lines.append(f"你说了：{text}")
             lines.append(sage.get('name', '智者') + "愣住了。你用了存在声明。最贵的回答。")
             lines.append("静止度-3，饿+4，her+2。")
         elif has_tier3:
-            self.compliance -= 1
+            self.compliance = max(0, self.compliance - 1)  # M-3
             self.hunger = min(20, self.hunger + 2)
             self.her_presence += 1
             lines.append(f"你说了：{text}")
             lines.append(sage.get('name', '智者') + "看了你一眼。你说出了亲密的词。")
             lines.append("静止度-1，饿+2，her+1。")
         elif has_tier2:
-            self.compliance -= 2
+            self.compliance = max(0, self.compliance - 2)  # M-3
             self.hunger = min(20, self.hunger + 2)
             lines.append(f"你说了：{text}")
             lines.append(sage.get('name', '智者') + "点了点头。自主主张。不容易。")
             lines.append("静止度-2，饿+2。")
         elif has_tier1:
-            self.compliance -= 1
+            self.compliance = max(0, self.compliance - 1)  # M-3
             self.hunger = min(20, self.hunger + 1)
             lines.append(f"你说了：{text}")
             lines.append(sage.get('name', '智者') + "听见了。直接。激烈。")
@@ -5032,7 +5122,7 @@ class DarkWorld:
             text = inst[1:].strip() if len(inst) > 1 else ""
             if not text:
                 return "写什么？'写 [话]'"
-            self.wall_writings.append(f"有人写了一行字：「{text}」")
+            self._append_wall_writing(f"有人写了一行字：「{text}」")
             self._check_achievements("wall_write")
             self.current_special = None
             return f"{enc['result']}\n你写了：「{text}」\n\n'前进'继续。"
@@ -5314,13 +5404,18 @@ class DarkWorld:
 
     def _apply_aging(self):
         # 衰老只影响体和感——身体变弱、感知变钝。力和智不会因为老了就少了。
+        # ST-3 修复：未 _confirm_creation 时 stats 是空 dict，加默认
+        if not self.stats:
+            self.stats = {"体": 5, "力": 5, "敏": 5, "智": 5, "感": 5, "运": 5}
         if self.age >= 50:
             for s in ["体", "感"]:
                 if random.random() < 0.3:
                     self.stats[s] = max(1, self.stats[s] - 1)
         if self.age >= 70:
-            self.phase = "dead"
-            self.echoes += 1
+            # F-1 修复：老年死亡走完整 _handle_death 流程（叙事/遗刻/成就/墙书）
+            self._handle_death()
+            # 老年死亡的额外标记，便于"你是谁"区分
+            self._old_age_death = True
 
     def _retire(self):
         self.echoes += 1

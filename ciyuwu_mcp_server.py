@@ -175,7 +175,13 @@ async def list_tools():
                     "instruction": {
                         "type": "string",
                         "description": "游戏指令，如'前进'、'攻'、'说 我在这里'、'前进5'、'出镇 灰林'、'调 痛 眼'",
-                    }
+                    },
+                    "session_id": {
+                        # BUG-9 修复：暴露 session_id 参数，避免多用户互踩
+                        "type": "string",
+                        "description": "可选。指定要操作的存档 ID（来自 new_game/play 返回值的 session 字段）。"
+                                       "不提供则使用最近活跃 session（多用户并发时不安全）。",
+                    },
                 },
                 "required": ["instruction"],
             },
@@ -207,18 +213,33 @@ async def call_tool(name, arguments):
         status = _status_bar(state)
         if status:
             output += f"\n[{status}]"
+        # BUG-9 修复：把 session_id 返回给客户端，供后续 play/status 使用
+        output += f"\n\n[session:{session_id}]"
 
         return [TextContent(type="text", text=output)]
 
     elif name == "play":
         instruction = arguments.get("instruction", "").strip()
+        # BUG-9 修复：可选 session_id 参数，避免多用户互踩
+        requested_sid = arguments.get("session_id", "").strip()
         if not instruction:
             return [TextContent(type="text", text="空指令。试试'前进'、'攻'、'说 你好'。")]
 
         with _lock:
             _cleanup_sessions()
-            # 找最近的session
-            if _sessions:
+            # 优先用显式指定的 session_id
+            if requested_sid and requested_sid in _sessions:
+                latest_sid = requested_sid
+                state, _ = _sessions[latest_sid]
+            elif requested_sid:
+                return [TextContent(type="text", text=f"指定的 session_id '{requested_sid}' 不存在。请用 new_game 开新局。")]
+            elif _sessions:
+                # 多用户并发时不安全——打日志告警
+                if len(_sessions) > 1:
+                    import sys
+                    print(f"[WARN] MCP play: 多 session 并存({len(_sessions)}个)，"
+                          f"未指定 session_id，自动选中最近一个。可能误伤其他用户。",
+                          file=sys.stderr)
                 latest_sid = max(_sessions, key=lambda s: _sessions[s][1])
                 state, _ = _sessions[latest_sid]
             else:
@@ -240,12 +261,32 @@ async def call_tool(name, arguments):
         return [TextContent(type="text", text=compact)]
 
     elif name == "status":
+        # BUG-13 修复：接受可选 session_id 参数，与 play 行为对称
+        requested_sid = arguments.get("session_id", "").strip() if arguments else ""
         with _lock:
-            if _sessions:
+            if requested_sid and requested_sid in _sessions:
+                latest_sid = requested_sid
+                state, _ = _sessions[latest_sid]
+            elif requested_sid:
+                return [TextContent(type="text", text=f"指定的 session_id '{requested_sid}' 不存在。用new_game开一局。")]
+            elif _sessions:
+                if len(_sessions) > 1:
+                    import sys
+                    print(f"[WARN] MCP status: 多 session 并存({len(_sessions)}个)，"
+                          f"未指定 session_id，自动选中最近一个。", file=sys.stderr)
                 latest_sid = max(_sessions, key=lambda s: _sessions[s][1])
                 state, _ = _sessions[latest_sid]
             else:
-                return [TextContent(type="text", text="没有存档。用new_game开一局。")]
+                # BUG-13 修复：与 play 对称——提供"自动开新局"选项
+                choice = arguments.get("auto_new", False) if arguments else False
+                if choice:
+                    state, text = _new_game()
+                    session_id = uuid.uuid4().hex[:16]
+                    _sessions[session_id] = (state, time.time())
+                    out = _compact_text(text) + f"\n\n[session:{session_id}]\n[自动开新局成功]"
+                    return [TextContent(type="text", text=out)]
+                return [TextContent(type="text",
+                    text="没有存档。用new_game开一局，或传 auto_new=true 自动开。")]
 
         status = _status_bar(state)
 

@@ -32,7 +32,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
 from flask import Flask, request, jsonify
-from engine import new_game as _new_game, cmd as _cmd, _ensure_init, _snapshot, _restore, _status_bar
+from engine import new_game as _new_game, cmd as _cmd, _ensure_init, _snapshot, _restore, _status_bar, _atomic_json_write, _SAVE_FILE
 
 app = Flask(__name__)
 _lock = threading.Lock()
@@ -44,7 +44,14 @@ _SESSION_MAX = 100  # 最多存100个session
 _SESSION_TTL = 3600  # 1小时过期
 
 # ── 跨session meta持久化 ──
-_META_FILE = os.path.join(_HERE, "ciyuwu_meta.json")
+# F-2 修复：与 dark_engine / engine 共用 ciyuwu_save.json
+_META_FILE = _SAVE_FILE
+# 旧 ciyuwu_meta.json 自动迁移到新名
+_old_meta = os.path.join(_HERE, "ciyuwu_meta.json")
+if os.path.exists(_old_meta) and not os.path.exists(_META_FILE):
+    try:
+        os.rename(_old_meta, _META_FILE)
+    except Exception as _e:        import sys; print(f"[WARN] {_e}", file=sys.stderr)
 _META_KEYS = ["echoes", "runs", "echo_map", "killed_bosses",
               "unlocked_origins", "wall_writings", "total_wait",
               "unlocked_achievements", "heart_slots",
@@ -56,20 +63,77 @@ def _load_meta():
     if not os.path.exists(_META_FILE):
         return {}
     try:
-        with open(_META_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        # BUG-14 修复：跨进程读也加锁，避免读到半写的 .tmp 文件
+        with _meta_lock("r"):
+            with open(_META_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
     except:
         return {}
 
 def _save_meta(meta):
-    """把meta进度写到磁盘（原子写）。"""
+    """把meta进度写到磁盘（原子写 + 跨进程文件锁）。"""
     try:
-        tmp = _META_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, _META_FILE)
-    except:
+        # BUG-14 修复：跨进程并发下用 advisory lock 防止多副本同时写覆盖
+        with _meta_lock("w"):
+            _atomic_json_write(_META_FILE, meta)
+    except Exception as e:
+        import sys
+        print(f"[WARN] _save_meta 失败: {e}", file=sys.stderr)
+
+def _meta_lock(mode):
+    """跨进程文件锁 context manager。
+    优先用 fcntl.flock（Unix），否则用 msvcrt（Windows），都没有则降级为空锁。
+    """
+    class _NullLock:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    try:
+        if hasattr(os, 'O_EXCL'):  # Unix
+            import fcntl as _f
+            lock_path = _META_FILE + ".lock"
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            op = _f.LOCK_EX if mode == "w" else _f.LOCK_SH
+            try:
+                _f.flock(fd, op)
+            except Exception:
+                pass  # flock 失败仍继续，不阻塞业务
+            class _UnixLock:
+                def __enter__(self): return self
+                def __exit__(self, *a):
+                    try: _f.flock(fd, _f.LOCK_UN)
+                    except: pass
+                    try: os.close(fd)
+                    except: pass
+                    return False
+            return _UnixLock()
+        elif os.name == 'nt':  # Windows
+            import msvcrt
+            lock_path = _META_FILE + ".lock"
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            try:
+                # 简单 lock 1 字节（advisory）
+                if mode == "w":
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                else:
+                    msvcrt.locking(fd, msvcrt.LK_RLCK, 1)
+            except Exception:
+                pass
+            class _WinLock:
+                def __enter__(self): return self
+                def __exit__(self, *a):
+                    try:
+                        if mode == "w":
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        else:
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                    except: pass
+                    try: os.close(fd)
+                    except: pass
+                    return False
+            return _WinLock()
+    except Exception:
         pass
+    return _NullLock()
 
 def _extract_meta(state):
     """从state里提取meta字段。"""
@@ -233,7 +297,8 @@ def _status_from_state(state, last_words=None):
     elif state.get("current_special"):
         sub = f"special:{state['current_special'].get('name','')}"
     elif state.get("_light_bearer_active"):
-        sub = "light"
+        # BUG-6 修复：与 engine._status_bar / test_all.py 统一用 "light_bearer"
+        sub = "light_bearer"
     elif state.get("_crease_active"):
         sub = "crease"
     elif phase == "fork":
@@ -368,7 +433,8 @@ def cmd_game():
             return jsonify({
                 "text": output,
                 "state": new_state,
-                "done": False,  # 简化：旧接口不管done
+                # BUG-5 修复：旧接口也返回真实 done 状态，与 compact 模式一致
+                "done": new_state.get("phase") == "ending",
             })
 
 

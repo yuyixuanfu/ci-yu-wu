@@ -99,8 +99,7 @@ class CiyuwuGame:
         try:
             state = _snapshot(self._w)
             save_game(state)
-        except:
-            pass
+        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
 
     # ── 可读属性 ──
     @property

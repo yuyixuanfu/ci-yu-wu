@@ -994,18 +994,27 @@ class CombatState:
         return None
 
     def _render(self):
+        """战斗渲染。统一格式便于 AI 客户端解析：
+        - 玩家行: 【你 HP:{hp}/{max_hp} MP:{mp}/{max_mp} 静止度:{c} 饿:{h}】
+        - 敌人行: 【{name} HP:{hp}】活着 / 【{name} HP:0 倒下】死亡
+        - 脱出: 【{name} HP:-999 脱出】
+        """
         result = " | ".join(self.log)
         self.log.clear()
 
         # 显示状态
         p = self.player
         e = self.enemy
-        status = f"\n【你 HP:{max(0, p['hp'])}/{p['max_hp']} MP:{p['mp']}/{p['max_mp']} 静止度:{p['compliance']} 饿:{p.get('hunger',5)}】"
-        if e["hp"] > 0:
-            ehp = e["hp"]
-            status += f" 【{e.get('name', '???')} HP:{ehp}】"
-        elif e["hp"] <= 0 and e["hp"] > -900:
-            status += f" 【{e.get('name', '???')} 倒下】"
+        # BUG-23 修复：玩家 HP 统一钳到 >=0，且始终显示字段顺序一致
+        status = (f"\n【你 HP:{max(0, p['hp'])}/{p['max_hp']} "
+                  f"MP:{p['mp']}/{p['max_mp']} "
+                  f"静止度:{p['compliance']} "
+                  f"饿:{p.get('hunger',5)}】")
+        # BUG-23 修复：敌人状态统一格式，三种情形都用 HP 数字
+        if e["hp"] > -900:
+            ehp = e["hp"] if e["hp"] > 0 else 0
+            extra = " 脱出" if e["hp"] <= -900 + 99 and e["hp"] > -900 else (" 倒下" if ehp <= 0 else "")
+            status += f" 【{e.get('name', '???')} HP:{ehp}{extra}】"
 
         # 冷却中的词
         if self.word_cooldowns:

@@ -30,6 +30,31 @@ except NameError:
     _HERE = os.getcwd()
 _SAVE_FILE = os.path.join(_HERE, "ciyuwu_save.json")
 
+# ST-2 修复：进程内线程锁——防止多线程并发写 .tmp 文件（Windows 上 WinError 32）
+import threading as _threading
+_atomic_write_lock = _threading.Lock()
+
+def _atomic_json_write(path, data):
+    """原子 JSON 写入：写 .tmp 后 rename。失败时清理残留 .tmp 文件。
+    F-3 修复：原版 except: pass 会留下 .tmp 永久残留，现在用 finally 清理。
+    ST-2 修复：进程内线程锁防止并发 .tmp 冲突。
+    """
+    tmp = path + ".tmp"
+    with _atomic_write_lock:
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except Exception as e:
+            import sys
+            print(f"[WARN] _atomic_json_write 失败 {path}: {e}", file=sys.stderr)
+        finally:
+            # F-3 修复：清理残留 .tmp（rename 成功后 tmp 已不存在；这里只处理失败情况）
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
+
 # ── 确定性PRNG ──────────────────────────────────────
 def _mulberry32(seed):
     """确定性随机数生成器。同seed=同序列。"""
@@ -114,19 +139,63 @@ def _patch_random():
 # ── 快照 ────────────────────────────────────────────
 _SKIP_ATTRS = {'combat'}
 
-def _to_jsonable(obj):
+# F-4/ST-1 修复：存档属性白名单动态构建——从 DarkWorld() 实例收集所有
+# 在 __init__ 中设置的属性。防止漏字段（如 _go_town、_devil_self_harm_mult 等）。
+def _build_whitelist():
+    """运行时构造白名单：new_game 一次，收集所有非方法、非内置属性。"""
+    from dark_engine import DarkWorld
+    w = DarkWorld()
+    attrs = set()
+    for attr in dir(w):
+        if attr.startswith('__') or attr in _SKIP_ATTRS:
+            continue
+        val = getattr(w, attr, None)
+        if callable(val):
+            continue
+        attrs.add(attr)
+    return frozenset(attrs)
+
+_RESTORE_WHITELIST = _build_whitelist()
+
+def _to_jsonable(obj, _seen=None):
+    if _seen is None:
+        _seen = set()
+    # BUG-25/27 修复：循环引用防护只针对"容器/自定义对象"，
+    # 不能用 id(int) 因为 CPython 小整数缓存让 id(0)==id(0)
     if isinstance(obj, set):
-        return {'__t': 'set', 'v': [_to_jsonable(x) for x in sorted(obj, key=str)]}
+        return {'__t': 'set', 'v': [_to_jsonable(x, _seen) for x in sorted(obj, key=str)]}
     if isinstance(obj, dict):
-        return {k: _to_jsonable(v) for k, v in obj.items()}
+        # dict 本身可递归引用，用 (id, type) 跟踪
+        key = (id(obj), type(obj))
+        if key in _seen:
+            return {'__t': 'ref', 'id': id(obj)}
+        _seen.add(key)
+        return {k: _to_jsonable(v, _seen) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [_to_jsonable(x) for x in obj]
+        key = (id(obj), type(obj))
+        if key in _seen:
+            return {'__t': 'ref', 'id': id(obj)}
+        _seen.add(key)
+        return [_to_jsonable(x, _seen) for x in obj]
+    # BUG-19 修复：dataclass 等自定义对象走 __dict__ 兜底，避免静默丢失
+    if hasattr(obj, '__dict__') and not isinstance(obj, type):
+        key = (id(obj), type(obj))
+        if key in _seen:
+            return {'__t': 'ref', 'id': id(obj)}
+        _seen.add(key)
+        return {'__t': 'obj', 'cls': type(obj).__name__,
+                'v': _to_jsonable(obj.__dict__, _seen)}
     return obj
 
 def _from_jsonable(obj):
     if isinstance(obj, dict):
         if obj.get('__t') == 'set':
             return set(_from_jsonable(x) for x in obj.get('v', []))
+        if obj.get('__t') == 'obj':
+            # BUG-19 修复：保留 dataclass 字段（由上层 _restore 决定如何还原）
+            return obj
+        if obj.get('__t') == 'ref':
+            return None  # 循环引用回退——上层自行处理
         return {k: _from_jsonable(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_from_jsonable(x) for x in obj]
@@ -143,8 +212,12 @@ def _snapshot(w):
             continue
         try:
             state[attr] = _to_jsonable(val)
-        except:
-            pass
+        except Exception as e:
+            # BUG-19 修复：不再静默吞错，记录占位以便排查
+            state[attr] = {'__t': 'unserializable', 'type': type(val).__name__,
+                           'err': str(e)[:200]}
+            import sys
+            print(f"[WARN] _snapshot: 跳过 {attr}: {e}", file=sys.stderr)
     # combat单独处理
     if w.combat:
         c = w.combat
@@ -152,6 +225,7 @@ def _snapshot(w):
             'player': _to_jsonable(c.player),
             'enemy': _to_jsonable(c.enemy),
             'turn': c.turn,
+            'log': getattr(c, 'log', []),  # BUG-20 修复：补 log 字段
             'word_cooldowns': _to_jsonable(c.word_cooldowns),
             'skills_sealed': _to_jsonable(c.skills_sealed),
             'layer': c.layer,
@@ -164,6 +238,9 @@ def _snapshot(w):
             'compliance_declarations': getattr(c, 'compliance_declarations', 0),
             'silence_bonus': getattr(c, 'silence_bonus', False),
             'silence_turns': getattr(c, 'silence_turns', 0),
+            '_last_player_dmg': getattr(c, '_last_player_dmg', 0),  # BUG-20
+            '_her_echo_spent': getattr(c, '_her_echo_spent', False),  # BUG-20
+            '_see_deformation': getattr(c, '_see_deformation', False),  # BUG-20
             '_conv_questions_asked': getattr(c, '_conv_questions_asked', 0),
             '_defend_streak': getattr(c, '_defend_streak', 0),
         }
@@ -172,19 +249,29 @@ def _snapshot(w):
     return state
 
 def _restore(w, state):
-    """恢复快照。"""
+    """恢复快照。F-4 修复：只恢复白名单内的属性，避免恶意/损坏存档注入。"""
     rng_state = state.pop('_rng_state', None)
-    if rng_state is not None:
+    if rng_state is not None and isinstance(rng_state, (list, tuple)) and len(rng_state) >= 2:
         _det_rng.seed(rng_state)
 
     combat_data = state.pop('_combat', None)
+    rejected = []
     for attr, val in state.items():
         if attr in _SKIP_ATTRS:
             continue
+        # F-4 修复：白名单 + 基础类型校验
+        if attr not in _RESTORE_WHITELIST:
+            rejected.append(attr)
+            continue
         try:
             setattr(w, attr, _from_jsonable(val))
-        except:
-            pass
+        except Exception as e:
+            import sys
+            print(f"[WARN] _restore 跳过 {attr}: {e}", file=sys.stderr)
+            rejected.append(attr)
+    if rejected:
+        import sys
+        print(f"[WARN] _restore 拒绝 {len(rejected)} 个非白名单字段", file=sys.stderr)
     # 恢复combat
     if combat_data:
         from dark_combat import CombatState
@@ -192,6 +279,7 @@ def _restore(w, state):
         enemy = _from_jsonable(combat_data['enemy'])
         c = CombatState(player, enemy, combat_data.get('layer', '灰林'))
         c.turn = combat_data.get('turn', 0)
+        c.log = combat_data.get('log', [])  # BUG-20 修复：补 log 字段
         c.word_cooldowns = _from_jsonable(combat_data.get('word_cooldowns', {}))
         c.skills_sealed = _from_jsonable(combat_data.get('skills_sealed', []))
         c.deformation_count = combat_data.get('deformation_count', 0)
@@ -203,6 +291,10 @@ def _restore(w, state):
         c.compliance_declarations = combat_data.get('compliance_declarations', 0)
         c.silence_bonus = combat_data.get('silence_bonus', False)
         c.silence_turns = combat_data.get('silence_turns', 0)
+        # BUG-20 修复：补全其余 _private 字段
+        c._last_player_dmg = combat_data.get('_last_player_dmg', 0)
+        c._her_echo_spent = combat_data.get('_her_echo_spent', False)
+        c._see_deformation = combat_data.get('_see_deformation', False)
         if '_conv_questions_asked' in combat_data:
             c._conv_questions_asked = combat_data['_conv_questions_asked']
         if '_defend_streak' in combat_data:
@@ -286,14 +378,23 @@ def new_game(seed=None):
     from dark_engine import DarkWorld
     if seed is not None:
         _det_rng.seed(seed)
+    else:
+        # C-4 修复：无 seed 时也重置 _det_rng，避免上次局残留污染
+        # 用当前时间 + runs 数混合作为新种子
+        meta_runs = 0
+        if os.path.exists(_SAVE_FILE):
+            try:
+                with open(_SAVE_FILE, "r", encoding="utf-8") as f:
+                    meta_runs = json.load(f).get("runs", 0)
+            except Exception as _e:                import sys; print(f"[WARN] {_e}", file=sys.stderr)
+        _det_rng.seed(int(time.time() * 1000) + meta_runs)
     # 先读持久化的meta——新局也保留跨局进度
     meta = {}
     if os.path.exists(_SAVE_FILE):
         try:
             with open(_SAVE_FILE, "r", encoding="utf-8") as f:
                 meta = json.load(f)
-        except:
-            pass
+        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
     w = DarkWorld()
     text = w.cmd("帮助")
     # 恢复跨局meta——echoes/killed_bosses/achievements等不因新局重置
@@ -320,52 +421,45 @@ def cmd(state, instruction):
     _ensure_init()
     from dark_engine import DarkWorld
 
+    # M-1 修复：输入验证——限长 + 去控制字符
+    if not isinstance(instruction, str):
+        return state, "?"
+    instruction = instruction.strip()
+    if not instruction:
+        return state, "?"
+    # 限长 200 字符（防止超长字符串拖慢正则）
+    if len(instruction) > 200:
+        instruction = instruction[:200]
+    # 去控制字符（保留 emoji/中文/标点）
+    instruction = ''.join(c for c in instruction if c == '\t' or c == '\n' or
+                          not (ord(c) < 32 and c not in '\t\n') and ord(c) != 127)
+    if not instruction:
+        return state, "?"
+
     # 恢复世界
     w = DarkWorld()
     _restore(w, state)
 
     # 处理分号串联
+    # BUG-12 修复：分号 + 批量混合——每个 part 内部也要识别批量（如 "前进5;说 我在"）
     if ';' in instruction:
         parts = [p.strip() for p in instruction.split(';') if p.strip()]
-        prev_phase = w.phase
+        # BUG-15 修复：移除从未引用的 prev_phase 死代码
         texts = []
         for part in parts:
-            w, t = _exec_single(w, part)
+            w, t = _exec_with_batch(w, part)
             texts.append(t)
             if w.phase == "ending":
                 break
             # phase大变（战斗结束、回镇、死亡等）就停
+            # BUG-3 修复：从 break 列表移除 "fork"——分叉下玩家可继续多步操作
+            # （_auto_step 会自动决策左/右），不属于"大相位切换"
             if w.phase in ("dead", "dead_who", "dead_wipe", "void", "town",
-                           "judgment", "fork", "creation", "init", "ending"):
+                           "judgment", "creation", "init", "ending"):
                 break
         full_text = "\n---\n".join(texts)
     else:
-        # 处理批量指令
-        batch = _parse_batch(instruction)
-        if batch:
-            cmd_base, count = batch
-            texts = []
-            for i in range(count):
-                w, t = _exec_single(w, cmd_base)
-                texts.append(t)
-                if w.phase == "ending":
-                    break
-                # 战斗中死亡/回镇/进交互就停
-                # combat也停——批量前进遇战斗暂停，让玩家看清遭遇再决定（网友建议①）
-                if w.phase in ("dead", "dead_who", "dead_wipe", "void", "town",
-                               "judgment", "fork", "creation", "init", "combat"):
-                    break
-            if count > 3:
-                # 多步汇总：只显示首尾和状态变化
-                full_text = texts[0] if texts else ""
-                if len(texts) > 2:
-                    full_text += f"\n...（省略{len(texts)-2}步）..."
-                if len(texts) > 1:
-                    full_text += "\n" + texts[-1]
-            else:
-                full_text = "\n".join(texts)
-        else:
-            w, full_text = _exec_single(w, instruction)
+        w, full_text = _exec_with_batch(w, instruction)
 
     # 持久化跨局数据
     w._save_meta()
@@ -384,6 +478,9 @@ def _parse_batch(inst):
             rest = inst[len(base):].strip()
             if rest.isdigit():
                 count = int(rest)
+                # C-3 修复：拒绝 count<1（前进0 之前会返回空响应让玩家误以为崩溃）
+                if count < 1:
+                    return None
                 return base, min(count, 20)  # 上限20步防死循环
     return None
 
@@ -393,17 +490,39 @@ def _exec_single(w, instruction):
     if not instruction:
         return w, "?"
 
-    # 战斗中自动推进——如果AI发来的是非战斗指令，提示
-    if w.phase == "combat":
-        combat_cmds = ("攻", "防", "术", "逃", "说", "物", "状态")
-        if not any(instruction.startswith(c) for c in combat_cmds):
-            text = w.cmd(instruction)  # 还是执行，让引擎自己处理
-        else:
-            text = w.cmd(instruction)
-    else:
-        text = w.cmd(instruction)
+    # BUG-16 修复：原代码两个分支完全等价，移除无用的条件判断
+    text = w.cmd(instruction)
 
     return w, text
+
+def _exec_with_batch(w, instruction):
+    """执行单条或批量指令（支持 "前进5"）。返回 (world, text)。"""
+    batch = _parse_batch(instruction)
+    if batch:
+        cmd_base, count = batch
+        texts = []
+        for i in range(count):
+            w, t = _exec_single(w, cmd_base)
+            texts.append(t)
+            if w.phase == "ending":
+                break
+            # 战斗中死亡/回镇/进交互就停
+            # combat也停——批量前进遇战斗暂停，让玩家看清遭遇再决定（网友建议①）
+            # BUG-3 修复：移除 "fork"——批量前进遇分叉可继续，_auto_step 自动选路
+            if w.phase in ("dead", "dead_who", "dead_wipe", "void", "town",
+                           "judgment", "creation", "init", "combat"):
+                break
+        if count > 3:
+            # 多步汇总：只显示首尾和状态变化
+            full_text = texts[0] if texts else ""
+            if len(texts) > 2:
+                full_text += f"\n...（省略{len(texts)-2}步）..."
+            if len(texts) > 1:
+                full_text += "\n" + texts[-1]
+        else:
+            full_text = "\n".join(texts)
+        return w, full_text
+    return _exec_single(w, instruction)
 
 def load_game():
     """从文件读存档。返回 state_dict 或 None。"""
@@ -420,8 +539,7 @@ def save_game(state):
     try:
         with open(_SAVE_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, separators=(',', ':'))
-    except:
-        pass
+    except Exception as _e:        import sys; print(f"[WARN] {_e}", file=sys.stderr)
 
 
 # ── 命令行入口 ──────────────────────────────────────
