@@ -521,7 +521,15 @@ class DarkWorld:
                 lines.append("'出镇 [层名]'（暂无可进入层，多攒遗刻或击败Boss）")
             lines.append("状态 / 词库 / 遗刻 / 任务 / 遗忘 [词] / 帮助")
         else:
+            # BUG-FIX：compliance>=20 仍允许 出镇/脱出/状态，但玩家看不到
+            # 提示其还能用最少关键指令
             lines.append("正常。")
+            # 仍给一个暗示，让玩家知道还能动
+            available = [l for l in LAYERS if self._can_enter(l)]
+            if available:
+                lines.append(f"（仍可：'出镇 {available[0]}' / '脱出' / '状态'）")
+            else:
+                lines.append("（仍可：'状态' / '脱出'）")
         return "\n".join(lines)
 
     def _cmd_town(self, inst):
