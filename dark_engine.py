@@ -3949,10 +3949,17 @@ class DarkWorld:
         self.game_diary.extend(diary_entries)
 
         # ── 死亡回看 ──
+        # BUG-FIX：_old_age_death 标记已设但没用，玩家不知道是老年死亡还是战斗死亡
         if r_caught:
             lines = ["R来了。", ""]
             lines.append("你没有倒下。你消失了。残壁上没有你的字。")
             lines.append("遗刻不变。R不允许你留下痕迹。")
+            lines.append("")
+        elif getattr(self, '_old_age_death', False):
+            # 老年死亡专用叙事
+            lines = [f"你老了。{self.age}岁。", ""]
+            lines.append("你的身体记住了所有打过工的黑夜、说过的词、写下又消失的字。")
+            lines.append("它没有撑住。但它撑了很久。")
             lines.append("")
         else:
             lines = ["你倒下了。", ""]
