@@ -104,7 +104,7 @@ class CiyuwuGame:
         try:
             state = _snapshot(self._w)
             save_game(state)
-        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
+        except Exception as _e:            import sys; print(f"[WARN] {{_e}}", file=sys.stderr)
 
     @property
     def phase(self):

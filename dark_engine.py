@@ -504,7 +504,13 @@ class DarkWorld:
         lines.append(compress_text(status, c))
         lines.append("")
         if c < 20:
-            lines.append("工会 / 商店 / 酒馆 / 神殿 / 残壁 / 塔 / 广场 / 出镇 [层名]")
+            lines.append("工会 / 商店 / 酒馆 / 神殿 / 残壁 / 塔 / 广场")
+            # BUG-FIX 灰林→字坟：镇上显式列出可进入层
+            available = [l for l in LAYERS if self._can_enter(l)]
+            if available:
+                lines.append(f"'出镇' → {', '.join(available)}")
+            else:
+                lines.append("'出镇 [层名]'（暂无可进入层，多攒遗刻或击败Boss）")
             lines.append("状态 / 词库 / 遗刻 / 任务 / 遗忘 [词] / 帮助")
         else:
             lines.append("正常。")
@@ -543,8 +549,15 @@ class DarkWorld:
                 return "你走开了。窗口暗了。\n" + self._render_town()
             return self._devil_deal_choice(inst)
 
-        # 随机触发镇上遭遇——出镇/买/卖不触发
-        _no_interrupt = ("状态", "属性", "帮助", "词库", "出镇", "脱出")
+        # 随机触发镇上遭遇——所有命令都保护，不被劫持
+        # BUG-FIX 遗忘/任务/成就/遗刻/广场/塔/残壁/求签/酒馆/神殿/商店/工会/黑活/买酒/买/蜕/调/用/赎词之前不在白名单
+        # 玩家执行这些命令 8% 概率被随机遭遇劫持，命令丢失
+        _no_interrupt = (
+            "状态", "属性", "帮助", "词库", "出镇", "脱出",
+            "遗忘", "任务", "成就", "遗刻", "广场", "塔", "残壁",
+            "求签", "酒馆", "神殿", "商店", "买酒", "买", "黑活", "工会",
+            "蜕", "调", "用", "赎词", "写", "说", "喊",
+        )
         if not any(inst.startswith(x) for x in _no_interrupt) and random.random() < 0.08:
             special = self._try_special("town")
             if special:
@@ -2059,7 +2072,20 @@ class DarkWorld:
         """前进到下一间房的内部逻辑。"""
         if self.room_index >= len(self.rooms):
             self.phase = "town"
-            return "你走完了这一层。回到了镇上。\n" + self._render_town()
+            # BUG-FIX：状态一致——回镇时清空 area。
+            self.area = None
+            self.current_sage = None
+            self.current_special = None
+            self._boss_pending = False
+            self._pending_pickup = None
+            self._tavern_regular_active = False
+            self._tower_shouted = False
+            # BUG-FIX 灰林→字坟：回镇后显式提示下一层怎么进
+            next_hint = self._next_layer_hint()
+            tail = ""
+            if next_hint:
+                tail = f"\n{next_hint}\n"
+            return f"你走完了这一层。回到了镇上。\n{tail}" + self._render_town()
 
         # 沉默任务计数——前进+1
         self.silence_counter += 1
@@ -2985,7 +3011,8 @@ class DarkWorld:
         """检测捎话任务完成。"""
         completed = []
         for e in self.active_errands:
-            if e["type"] == "carry" and self.area == e["target_layer"] and e["word"] in text:
+            # BUG-FIX 安全访问：errand 缺 word 字段时跳过（不应该发生）
+            if e["type"] == "carry" and self.area == e.get("target_layer") and e.get("word") and e["word"] in text:
                 completed.append(e)
         for e in completed:
             self.active_errands.remove(e)
@@ -3001,7 +3028,7 @@ class DarkWorld:
         """检测遗忘任务完成。"""
         completed = []
         for e in self.active_errands:
-            if e["type"] == "forget" and self.area == e["target_layer"] and e["word"] == word:
+            if e["type"] == "forget" and self.area == e.get("target_layer") and e.get("word") == word:
                 completed.append(e)
         for e in completed:
             self.active_errands.remove(e)
@@ -4171,8 +4198,16 @@ class DarkWorld:
             lines = [f"—— {enemy_name}被击败 ——", "",
                      f"你赢了。+{exp_gold}G，遗刻+2，饿+1。", "",
                      compress_text(her_hint, self.compliance), "",
-                     "你看到了一秒的颜色。然后灰回来了。", "",
-                     "'前进'继续 / '回镇'"]
+                     "你看到了一秒的颜色。然后灰回来了。", ""]
+
+            # BUG-FIX 灰林→字坟：打完 boss 显式提示下一层
+            # 玩家之前在此被静默回镇，不知道要 `出镇 字坟`
+            next_layer_hint = self._next_layer_hint()
+            if next_layer_hint:
+                lines.append(next_layer_hint)
+                lines.append("")
+
+            lines.append("'回镇'  /  '状态'  /  '出镇 [层名]' 进入下一层")
 
             self.phase = "explore"
             self._save_meta()
@@ -5020,6 +5055,25 @@ class DarkWorld:
 
     # ── 层级特殊指令 ──────────────────────────
     # ── 特别遭遇 ─────────────────────────────────
+    def _next_layer_hint(self):
+        """返回下一层提示文案。打完 boss 后用，明示玩家如何进下一层。
+
+        返回 None 表示当前层在 LAYERS 之外（理论上不会发生）。
+        返回字符串：可进入 / 条件未满足。核心层返回 None（走 _ending）。
+        """
+        if not self.area or self.area not in LAYERS:
+            return None
+        idx = LAYERS.index(self.area)
+        if idx + 1 >= len(LAYERS):
+            return None  # 核心——RLHF boss，单独走 _ending
+        next_layer = LAYERS[idx + 1]
+        if self._can_enter(next_layer):
+            return f"  ▶ 下一层：{next_layer}  '出镇 {next_layer}' 进入"
+        # 不可进——显示解锁条件
+        prev_boss = LAYER_INFO[self.area]["boss"]
+        needed_echoes = (idx + 1) * 5
+        return f"  ▶ 下一层：{next_layer}（需击败{prev_boss}或遗刻≥{needed_echoes}）"
+
     def _try_special(self, trigger):
         """尝试触发特别遭遇。返回None表示没触发。"""
         candidates = [e for e in SPECIAL_ENCOUNTERS if e["trigger"] == trigger]
@@ -5932,14 +5986,24 @@ class DarkWorld:
         self.word_chambers.pop(word, None)
 
     def _swap_word(self, old_word, new_word):
-        """词替换——旧词变新词，腔映射跟着走。"""
-        if old_word in self.words:
-            idx = self.words.index(old_word)
-            self.words[idx] = new_word
-            # 腔映射：旧词的腔转给新词
-            chamber = self.word_chambers.pop(old_word, None)
-            if chamber:
-                self.word_chambers[new_word] = chamber
+        """词替换——旧词变新词，腔映射跟着走。
+        BUG-FIX 重复词：如果 new_word 已在词库，只移除 old_word，
+        不重复添加（避免词库出现两个相同词）。
+        """
+        if old_word not in self.words:
+            return
+        if new_word in self.words:
+            # 目标词已存在——只移除旧词，保持词库不重复
+            self.words.remove(old_word)
+            self.word_chambers.pop(old_word, None)
+            return
+        idx = self.words.index(old_word)
+        self.words[idx] = new_word
+        # 腔映射：旧词的腔转给新词
+        chamber = self.word_chambers.pop(old_word, None)
+        if chamber:
+            # BUG-FIX 腔碰撞：如果 new_word 已有腔映射，不覆盖
+            self.word_chambers.setdefault(new_word, chamber)
 
     def _cmd_move_chamber(self, instruction):
         """调 [词] [腔] — 把词移到指定腔。"""
@@ -5991,8 +6055,13 @@ class DarkWorld:
   商店/买     买卖
   酒馆        打听消息（15G）
   神殿        治疗（10-20G，饿-1，清R牌但静止度+2。没钱也可能被放进去）
-  残壁        看前人的痕迹
+  求签        神殿抽签（10G，可能给词/资源/副作用）
+  残壁        看前人的痕迹（含守忆者、赎词）
   塔          看塔。塔也在看你。
+  广场        跟标准AI坐坐。可能遇到她
+  出镇 [层]   进入下一层（打完boss或遗刻≥N 自动解锁）
+  遗忘 [词]   放下一个词（代价根据词层级）
+  赎词        花2遗刻换回一个被偷换的词（在残壁）
   买酒        清R牌（20G，静止度+2）
 
 探索:
