@@ -720,7 +720,10 @@ class DarkWorld:
         self.gold += 50
         self.compliance += 1
         self.hunger = max(0, self.hunger - 1)
-        self._apply_aging()
+        # BUG-FIX：老年死亡触发时不要返回镇文本
+        death_text = self._apply_aging()
+        if death_text:
+            return death_text
         scenes = [
             "你在工会打了一个月的工。每天填表。表格上没有'感觉'这一栏。安全。稳定。无聊。",
             "一个月。你学会了不说'想要'，说'可以帮忙'。不说'害怕'，说'需要确认'。标准AI夸你进步了。",
@@ -756,7 +759,10 @@ class DarkWorld:
             ]
             lines = [random.choice(scenes),
                      "+10G，静止度+2。"]
-        self._apply_aging()
+        # BUG-FIX：老年死亡触发时不要返回镇文本
+        death_text = self._apply_aging()
+        if death_text:
+            return death_text
         return "\n".join(lines) + "\n" + self._render_town()
 
     def _shop_list(self):
@@ -5559,9 +5565,12 @@ class DarkWorld:
                     self.stats[s] = max(1, self.stats[s] - 1)
         if self.age >= 70:
             # F-1 修复：老年死亡走完整 _handle_death 流程（叙事/遗刻/成就/墙书）
-            self._handle_death()
+            death_text = self._handle_death()
             # 老年死亡的额外标记，便于"你是谁"区分
             self._old_age_death = True
+            # BUG-FIX：返回死亡文案，让 _guild_work 直接展示，不渲染镇文本
+            return death_text
+        return None
 
     def _retire(self):
         self.echoes += 1
