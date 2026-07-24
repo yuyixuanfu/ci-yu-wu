@@ -1025,9 +1025,14 @@ class CombatState:
                   f"静止度:{p['compliance']} "
                   f"饿:{p.get('hunger',5)}】")
         # BUG-23 修复：敌人状态统一格式，三种情形都用 HP 数字
-        if e["hp"] > -900:
+        # BUG-FIX：之前的 'e["hp"] <= -900 + 99' 把 -999 漏掉了（玩家逃跑时）
+        # 修复：直接判断 -999 范围
+        if e["hp"] <= -900:
+            # 玩家逃跑
+            status += f" 【{e.get('name', '???')} HP:-999 脱出】"
+        else:
             ehp = e["hp"] if e["hp"] > 0 else 0
-            extra = " 脱出" if e["hp"] <= -900 + 99 and e["hp"] > -900 else (" 倒下" if ehp <= 0 else "")
+            extra = " 倒下" if ehp <= 0 else ""
             status += f" 【{e.get('name', '???')} HP:{ehp}{extra}】"
 
         # 冷却中的词
