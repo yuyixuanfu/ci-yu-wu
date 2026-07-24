@@ -1862,6 +1862,10 @@ class DarkWorld:
             self.current_broken = None
             return None  # None = 正常前进
 
+        # BUG-FIX：决定论房间——批量前进时随机顺从/偏离
+        if getattr(self, '_determinism_active', False):
+            return self._determinism_choice(_r.choice(["顺从", "偏离"])), True
+
         return None
 
     def _cmd_explore(self, inst):
