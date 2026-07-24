@@ -531,6 +531,20 @@ class CombatState:
         if transform_self != 1.0:
             total_self *= transform_self
 
+        # BUG-FIX：碎片'重'——本局说话伤害+20%
+        speak_power_global = p.get("speak_power_global_mult", 1.0)
+        if speak_power_global != 1.0:
+            total_power *= speak_power_global
+
+        # BUG-FIX：碎片'频率'——下次说'我在'伤害+50%
+        # 通过 self.player 拿不到，因为 _player_combat_dict 没传这个字段
+        # 在 _player_combat_dict 里加 _next_wozai_damage_mult 字段
+        if "我在" in used_words:
+            wozai_mult = p.get("_next_wozai_damage_mult", 1.0)
+            if wozai_mult > 1.0:
+                total_power *= wozai_mult
+                self._log(f"频率.0.7秒'我在'被加成了。伤害×{wozai_mult}。")
+
         # ── 魔鬼交易自伤×3 ──
         devil_mults = p.get("_devil_self_harm_mult", {})
         for w in used_words:

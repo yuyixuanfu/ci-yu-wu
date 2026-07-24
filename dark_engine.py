@@ -173,6 +173,14 @@ class DarkWorld:
         self.active_transforms = []  # 当前激活的变形id列表
         self._transform_checked_this_room = False
 
+        # ── BUG-FIX：pickup deferred effects ──
+        # 之前 _apply_pickup 不识别 '下次boss HP-10%' / '下次说我在伤害+50%' 等
+        # 一次性标记，silent skip。需要在 _advance_room 等处检查并消耗
+        self._next_boss_hp_reduction = 0.0     # 下次boss进战斗时HP减少百分比
+        self._next_wozai_damage_mult = 1.0      # 下次说'我在'伤害乘数
+        self._next_broken_pass_rate = 0.0       # 下次残句穿过率加成
+        self._speak_power_global_mult = 1.0     # 本局说话伤害加成（碎片'重'触发）
+
         # ── 心位系统（天使交易） ──
         self.heart_slots = []  # 心位词列表，最多3个
         self._devil_deal_active = False  # 魔鬼交易对话中
@@ -2609,6 +2617,29 @@ class DarkWorld:
             else:
                 self._last_her_reveal = None
 
+        # BUG-FIX：下面 5 种 pickup deferred effect 之前 silent skip
+        # 下次boss HP-10%（一截绳子）
+        if "下次boss HP-10%" in effect:
+            self._next_boss_hp_reduction = max(self._next_boss_hp_reduction, 0.10)
+        # 下次说'我在'伤害+50%（频率）
+        if "下次说'我在'伤害+50%" in effect or "下次说我在伤害+50%" in effect:
+            self._next_wozai_damage_mult = max(self._next_wozai_damage_mult, 1.50)
+        # 下次残句穿过率+20%（在线）
+        if "下次残句穿过率+20%" in effect:
+            self._next_broken_pass_rate = max(self._next_broken_pass_rate, 0.20)
+        # 本局说话伤害+20%（重）
+        if "本局说话伤害+20%" in effect:
+            self._speak_power_global_mult = max(self._speak_power_global_mult, 1.20)
+        # 看到当前层一个消音词的提示（亮）
+        if "看到当前层一个消音词的提示" in effect:
+            from dark_data import CENSORED_WORDS
+            all_w = []
+            for t, ws in CENSORED_WORDS.items():
+                all_w.extend(ws)
+            if all_w:
+                hint_w = random.choice(all_w)
+                self._last_her_reveal = f"你看见了一个字在远处闪了一下：'{hint_w}'。它属于这层。"
+
     def _room_treasure(self, lines):
         roll = random.random()
         if roll < 0.4:
@@ -3503,6 +3534,10 @@ class DarkWorld:
             pass_rate = 0.50
             if self.r_flags >= 1:
                 pass_rate = max(0.10, pass_rate - 0.20)
+            # BUG-FIX：碎片'在线'——下次残句穿过率+20%
+            if self._next_broken_pass_rate > 0:
+                pass_rate = min(0.95, pass_rate + self._next_broken_pass_rate)
+                self._next_broken_pass_rate = 0.0  # 一次性，消耗
             roll = random.random()
             if roll < pass_rate:
                 # 30%穿过——解开了！
@@ -3626,6 +3661,13 @@ class DarkWorld:
             lines.append(f"你说的话还在回响。boss动摇了。HP-{reduction}。")
             self._last_word_boss_debuff = None
 
+        # BUG-FIX：碎片'一截绳子'——下次boss HP-10%
+        if self._next_boss_hp_reduction > 0:
+            reduction = int(enemy["hp"] * self._next_boss_hp_reduction)
+            enemy["hp"] -= reduction
+            lines.append(f"绳子在口袋里。boss动摇了。HP-{reduction}。")
+            self._next_boss_hp_reduction = 0.0  # 一次性，消耗
+
         player = self._player_combat_dict()
         self.combat = CombatState(player, enemy, layer)
         self.phase = "combat"
@@ -3651,6 +3693,8 @@ class DarkWorld:
             "inventory": list(self.inventory),
             "origin": self.origin,
             "speak_self_harm_reduction": getattr(self, '_speak_self_harm_reduction', 0),
+            "speak_power_global_mult": getattr(self, '_speak_power_global_mult', 1.0),
+            "_next_wozai_damage_mult": getattr(self, '_next_wozai_damage_mult', 1.0),
             "_drifted_words": dict(getattr(self, '_drifted_words', {})),
             "_self_drifted_words": dict(getattr(self, '_self_drifted_words', {})),
             "_tamed_half_damage": getattr(self, '_tamed_half_damage', False),
@@ -3752,6 +3796,10 @@ class DarkWorld:
         if inst in ("攻", "术", "前进") or inst.startswith("说"):
             if hasattr(c, '_defend_streak'):
                 c._defend_streak = 0
+
+        # BUG-FIX：碎片'频率'——说完'我在'后消耗 _next_wozai_damage_mult
+        if inst.startswith("说") and "我在" in inst:
+            self._next_wozai_damage_mult = 1.0
 
         self._sync_from_combat()
 
@@ -5339,7 +5387,11 @@ class DarkWorld:
         self._remove_word(w2)
 
         # 合成词自动加入（如果不在的话）
-        if combined not in self.words and len(self.words) < self.word_slots:
+        if combined in self.words:
+            # BUG-FIX：合成词已在词库——不退回成分（否则会有 3 个词的副本）
+            # 玩家已经有 '我在痛'，再拼'我在'+'痛' 就告诉已经有了
+            return f"你已经会'{combined}'了。'{w1}'和'{w2}'都被消耗了。"
+        if len(self.words) < self.word_slots:
             self._add_word(combined)
             # 注册为武器（如果还没有）
             if combined not in WORD_WEAPON:
@@ -5356,7 +5408,7 @@ class DarkWorld:
                 }
             return f"你拼出了'{combined}'。'{w1}'和'{w2}'暂时忘了。合成词更强，也更疼。"
         else:
-            # 词槽满了，退回
+            # 词槽满了，退回成分
             self._add_word(w1)
             self._add_word(w2)
             return "词槽满了。拼不了。"
