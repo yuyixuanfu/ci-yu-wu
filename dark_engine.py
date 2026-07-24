@@ -576,9 +576,14 @@ class DarkWorld:
             return self._encounter_light_bearer()
 
         if self.compliance >= 20:
-            if inst in ("状态", "词库"):
-                return "正常。"
-            return "正常。一切正常。"
+            # BUG-FIX：compliance>=20 时不能锁死玩家
+            # 至少允许 出镇 / 脱出 / 状态 / 词库 / 任务 / 遗刻 / 成就 / 帮助
+            # 状态/词库 原本就显示"正常"，但玩家需要看到实际状态，改为显示实际
+            if (inst in ("状态", "词库", "任务", "遗刻", "成就", "帮助")
+                    or inst.startswith("出镇") or inst == "脱出"):
+                pass  # 走正常 dispatch
+            else:
+                return "正常。一切正常。"
 
         if inst in ("状态", "属性"):
             return self._render_status()
