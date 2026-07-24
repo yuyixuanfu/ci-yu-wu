@@ -5272,6 +5272,12 @@ class DarkWorld:
                 return "你走开了。但前面就是尽头。\n\n" + self._enter_boss_combat([], _skip_special=True)
             return "你走开了。\n\n'前进'继续。"
 
+        # BUG-FIX：action-aware 提示。blank_page 应该说 '写 [话]'，last_word 应该说 '说 [词]'
+        action = enc.get("action")
+        if action == "write":
+            return "写什么？'写 [话]'"
+        if action == "speak":
+            return "说什么？'说 [词]'"
         return "选一个选项，或'跳过'。\n" + self._special_options_hint(enc)
 
     def _special_options_hint(self, enc):
