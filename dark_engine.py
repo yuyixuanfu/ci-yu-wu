@@ -2594,16 +2594,16 @@ class DarkWorld:
         # 坏碎片效果：R牌+1
         if "R牌+1" in effect:
             self.r_flags += 1
-        # 坏碎片效果：随机丢一个词
+        # 坏碎片效果：随机丢一个词——R 拿走了，无痕
         if "随机丢一个词" in effect and self.words:
             lost = random.choice(self.words)
             self._remove_word(lost)
-            self.forgotten_words.append(lost)
-        # 坏碎片效果：随机遗忘一个词
+            # BUG-FIX：'丢' 不进 forgotten_words（叙事：R 拿走了，你不知道没了什么）
+        # 坏碎片效果：随机遗忘一个词——你知道自己忘了
         if "随机遗忘一个词" in effect and self.words:
             lost = random.choice(self.words)
             self._remove_word(lost)
-            self.forgotten_words.append(lost)
+            self.forgotten_words.append(lost)  # '遗忘' 进 forgotten_words（你意识到没了）
         # 词库-1
         if "词库-1" in effect and self.words:
             lost = random.choice(self.words)
@@ -4759,7 +4759,11 @@ class DarkWorld:
             self.stats = {}
             return self._start_creation()
         elif inst == "脱出":
-            return "再见。残壁上的字会留着。"
+            # BUG-FIX：之前 '脱出' 没加遗刻，玩家'留'存档后脱出=0 遗刻
+            # 改用 _retire() 走标准 +1 遗刻
+            self._save_meta()
+            self.phase = "init"
+            return f"再见。残壁上的字会留着。'新角'再来。遗刻{self.echoes}。"
         return "你倒在这里。'新角'再来，或'脱出'离开。"
 
     # ── 分叉路 ────────────────────────────────
