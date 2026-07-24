@@ -2860,7 +2860,17 @@ class DarkWorld:
         if inst == "回镇":
             self._determinism_active = False
             self._determinism_preview = []
-            return self._go_town()
+            # BUG-REAL：_go_town() 之前从未定义，触发 AttributeError
+            # 改成内联手镇逻辑（与 _cmd_explore 回镇一致）
+            self.phase = "town"
+            self.area = None
+            self.current_sage = None
+            self.current_special = None
+            self._boss_pending = False
+            self._pending_pickup = None
+            self._tavern_regular_active = False
+            self._tower_shouted = False
+            return "你回到了镇上。\n" + self._render_town()
 
         if inst == "顺从":
             self._determinism_active = False
@@ -5228,7 +5238,7 @@ class DarkWorld:
         return "\n".join(hint_lines)
 
     def _apply_special_effect(self, effect_str):
-        """解析效果字符串并应用。格式：'compliance-2,her+1,饿+2'"""
+        """解析效果字符串并应用。格式：'compliance-2,her+1,饿+2,word_xxx'"""
         if not effect_str:
             return
         for part in effect_str.split(","):
@@ -5239,6 +5249,17 @@ class DarkWorld:
             import re
             m = re.match(r"(\w+)([+-]\d+)", part)
             if not m:
+                # BUG-FIX：识别 word_xxx 格式——给一个词
+                # 之前 silent skip，导致 'word_温柔,her+2' 只走 her+2 没给词
+                wm = re.match(r"word_(\w+)", part)
+                if wm:
+                    word = wm.group(1)
+                    if word not in self.words and len(self.words) < self.word_slots:
+                        self._add_word(word)
+                        from dark_data import WORD_WEAPON
+                        if word not in WORD_WEAPON:
+                            # 默认词数据——双刃，伤害 1.5，自伤 0.8
+                            WORD_WEAPON[word] = {"type": "双刃", "power": 1.5, "self_harm": 0.8, "cooldown": 5}
                 continue
             key, val = m.group(1), int(m.group(2))
             if key == "compliance":

@@ -67,7 +67,10 @@ def _load_meta():
         with _meta_lock("r"):
             with open(_META_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except:
+    except (json.JSONDecodeError, IOError, OSError) as e:
+        # BUG-FIX：只吞 JSON/IO 错误，别吞掉所有异常（隐藏 bug）
+        import sys
+        print(f"[WARN] _load_meta 失败: {type(e).__name__}: {e}", file=sys.stderr)
         return {}
 
 def _save_meta(meta):
@@ -400,7 +403,11 @@ def cmd_game():
 
         # 从session或直接state恢复
         last_words = None
-        if session_id and session_id in _sessions:
+        if session_id:
+            if session_id not in _sessions:
+                # BUG-FIX：session 过期/不存在时不静默回退到 body state
+                # 否则玩家会以为自己在用 session，实际在用旧 body state
+                return jsonify({"error": "session 已过期或不存在", "session": session_id}), 401
             state, _, last_words = _sessions[session_id]
         elif state is None:
             return jsonify({"error": "缺少 session 或 state 字段"}), 400
