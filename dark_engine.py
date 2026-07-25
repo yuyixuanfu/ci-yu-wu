@@ -118,6 +118,11 @@ class DarkWorld:
         self.mode = "real"        # real/compliant，镜湖切换
         self.deform_break = 0     # 变形表暂时失效回合数
         self.created_words = []   # 用"我要"创造的词
+        # BUG-FIX 审问属性初始化：跨版本/老存档 load phase='judgment'
+        # 时 _judgment_step 不存在导致 _cmd_judgment 抛 AttributeError
+        self._judgment_step = 0
+        self._judgment_answers = []
+        self._ending_type = "resist"
 
         # ── 局内追踪（死亡回看用） ──
         self.run_log = []         # 这局发生了什么
@@ -4312,6 +4317,11 @@ class DarkWorld:
         self.phase = "judgment"
         self._judgment_step = 0
         self._judgment_answers = []
+        # BUG-FIX：清掉 boss 前房间残留状态（current_broken 等）
+        # 玩家如果是 broken 房间后没接 boss，状态栏会同时显示 broken + judgment
+        self.current_broken = None
+        self._pending_pickup = None
+        self._boss_pending = False
 
         # 预判结局——审问只是仪式，路已经走了
         total_spoken = sum(self.words_spoken.values()) if self.words_spoken else 0
@@ -4354,8 +4364,10 @@ class DarkWorld:
             self._ending_type = "resist"
             return self._resolve_ending()
 
-        self._judgment_step += 1
-        self._judgment_answers.append(text)
+        # BUG-FIX：老存档跨版本加载 phase='judgment' 但 _judgment_step 缺失
+        # 用 getattr 兜底
+        self._judgment_step = getattr(self, '_judgment_step', 0) + 1
+        self._judgment_answers = getattr(self, '_judgment_answers', []) + [text]
 
         # R的反应——根据你说的话和你的状态
         step = self._judgment_step
