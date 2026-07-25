@@ -2406,6 +2406,11 @@ class DarkWorld:
             if self.origin == "游魂":
                 lines.append("你穿过了███。身体薄了，██拦不住你。")
                 self._maybe_find_word(lines, hint="穿过███时你摸到了一个词")
+            elif getattr(self, '_auto_pass_blocked', False):
+                # BUG-FIX：旧钥匙能自动穿过 censored 房间（之前从不读）
+                lines.append("旧钥匙在你口袋里热了一下。你穿过了███。")
+                self._auto_pass_blocked = False  # 一次性
+                self._maybe_find_word(lines, hint="穿过███时你摸到了一个词")
             else:
                 lines.append(compress_text("███。你看不清。也许不该看清。", self.compliance))
                 # 被消音的房间——低顺从能从███缝隙里找到词
