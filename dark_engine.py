@@ -117,6 +117,15 @@ class DarkWorld:
         self.current_sage = None  # 当前智者
         self.mode = "real"        # real/compliant，镜湖切换
         self.deform_break = 0     # 变形表暂时失效回合数
+        # BUG-FIX 之前加的临时状态没在 __init__ 初始化，跨局持续
+        self._next_boss_hp_reduction = 0.0
+        self._next_wozai_damage_mult = 1.0
+        self._next_broken_pass_rate = 0.0
+        self._speak_power_global_mult = 1.0
+        self._physics_hunger_power = False
+        self._carry_word_next = None
+        self._carry_stat_next = None
+        self._carry_compliance_next = None
         self.created_words = []   # 用"我要"创造的词
         # BUG-FIX 审问属性初始化：跨版本/老存档 load phase='judgment'
         # 时 _judgment_step 不存在导致 _cmd_judgment 抛 AttributeError
@@ -378,6 +387,12 @@ class DarkWorld:
         self.current_sage = None
         self.mode = "real"
         self.deform_break = 0
+        # BUG-FIX：新加的临时 buff 每局重置
+        self._next_boss_hp_reduction = 0.0
+        self._next_wozai_damage_mult = 1.0
+        self._next_broken_pass_rate = 0.0
+        self._speak_power_global_mult = 1.0
+        self._physics_hunger_power = False
         self.created_words = []
         self.run_log = []
         self.words_spoken = {}
@@ -472,6 +487,12 @@ class DarkWorld:
     def _render_town(self):
         c = self.compliance
         lines = ["—— 镇 ——"]
+
+        # BUG-FIX：_drift_restore_hint 在 town 显示（之前只在探索时消费）
+        if hasattr(self, '_drift_restore_hint') and self._drift_restore_hint:
+            lines.append("")
+            lines.append(self._drift_restore_hint)
+            self._drift_restore_hint = None
 
         # 塔——永远在那里。你不知道它有没有在看你。
         if c <= 3:
@@ -4188,6 +4209,12 @@ class DarkWorld:
         self.current_special = None
         self.mode = "real"
         self.deform_break = 0
+        # BUG-FIX：之前加的临时 buff 每局重置
+        self._next_boss_hp_reduction = 0.0
+        self._next_wozai_damage_mult = 1.0
+        self._next_broken_pass_rate = 0.0
+        self._speak_power_global_mult = 1.0
+        self._physics_hunger_power = False
         self.created_words = []
         self.run_log = []
         self.words_spoken = {}
