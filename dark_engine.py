@@ -2161,6 +2161,10 @@ class DarkWorld:
             stat = random.choice(["体", "力", "敏", "智", "感", "运"])
             self.stats[stat] = max(1, self.stats[stat] - 1)
 
+        # BUG-FIX：变形失效回合数递减（智者的"拒绝再说一遍"奖励）
+        if getattr(self, 'deform_break', 0) > 0:
+            self.deform_break -= 1
+
         # 追踪：带词走了几间房没说
         heavy_words = []
         for w in self.words:
@@ -3733,6 +3737,7 @@ class DarkWorld:
             "_devil_self_harm_mult": dict(getattr(self, '_devil_self_harm_mult', {})),
             "her_presence": self.her_presence,
             "silence_counter": getattr(self, 'silence_counter', 0),
+            "deform_break": getattr(self, 'deform_break', 0),  # BUG-FIX：变形失效回合数传给战斗
         }
 
     # ── 战斗指令 ──────────────────────────────

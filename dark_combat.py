@@ -226,7 +226,12 @@ class CombatState:
         deformed = False
         swallowed = False
         # 按key长度降序排列——长词优先匹配，避免"我不要"先替换导致"我不要被修改"找不到
-        sorted_deformation = sorted(DEFORMATION.items(), key=lambda x: len(x[0]), reverse=True)
+        # BUG-FIX：deform_break > 0 时跳过变形循环（"拒绝再说一遍"奖励）
+        if p.get("deform_break", 0) > 0:
+            self._log("她改不了你了。")
+            sorted_deformation = []
+        else:
+            sorted_deformation = sorted(DEFORMATION.items(), key=lambda x: len(x[0]), reverse=True)
         # 收集变形/吞替换，用占位符避免替换结果又命中其他key
         _replacements = {}  # original -> (replacement_text, fate)
         for original, replacement in sorted_deformation:
