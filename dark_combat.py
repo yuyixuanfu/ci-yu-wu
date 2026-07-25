@@ -579,6 +579,13 @@ class CombatState:
             total_power *= hunger_bonus
             total_self *= hunger_bonus
 
+        # BUG-FIX：红区"想要" 双倍伤害（_physics_hunger_power）
+        # 之前只设了状态从不读，玩家在红区说"想要"+2饿但伤害不变
+        if p.get("physics_hunger_power", False):
+            total_power *= 2.0
+            total_self *= 2.0
+            self._log("红区的'想要'被翻倍了。威力×2，自伤×2。")
+
         # 最终伤害
         # 说话是核心——比拳头强
         # 监听者沉默奖励：连续防御3次后说话伤害翻倍

@@ -3738,6 +3738,7 @@ class DarkWorld:
             "her_presence": self.her_presence,
             "silence_counter": getattr(self, 'silence_counter', 0),
             "deform_break": getattr(self, 'deform_break', 0),  # BUG-FIX：变形失效回合数传给战斗
+            "physics_hunger_power": getattr(self, '_physics_hunger_power', False),  # BUG-FIX：红区'想要'饿+2伤害×2
         }
 
     # ── 战斗指令 ──────────────────────────────
