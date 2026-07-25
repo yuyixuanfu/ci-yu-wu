@@ -5283,7 +5283,13 @@ class DarkWorld:
                         return f"{chosen['on_wrong']}\n\n'前进'继续。"
             except ValueError:
                 pass
-            return "选一个。1/2/3。\n" + self._special_options_hint(enc)
+            # BUG-FIX：之前硬编码'1/2/3'，但字坟/镜湖/红区只有 2 个声音
+            n = len(voices)
+            if n <= 1:
+                range_str = "1"
+            else:
+                range_str = f"1-{n}"
+            return f"选一个。{range_str}。\n" + self._special_options_hint(enc)
 
         # 选择题类型
         if "choices" in enc:
@@ -5368,6 +5374,11 @@ class DarkWorld:
         if "choices" in enc:
             for i, ch in enumerate(enc["choices"], 1):
                 hint_lines.append(f"  {i}. {ch.get('text', ch.get('label', '?'))}")
+        # BUG-FIX：信号类型有 voices（已被 shuffle 到 _signal_voices），列表给出来
+        if enc.get("is_signal"):
+            voices = getattr(self, '_signal_voices', [])
+            for i, v in enumerate(voices, 1):
+                hint_lines.append(f"  {i}. 「{v.get('text', '?')}」")
         return "\n".join(hint_lines)
 
     def _apply_special_effect(self, effect_str):
