@@ -123,6 +123,8 @@ class DarkWorld:
         self._next_broken_pass_rate = 0.0
         self._speak_power_global_mult = 1.0
         self._physics_hunger_power = False
+        self._boss_stronger_amount = 0     # FAKE_INFO 'boss_stronger' 累积
+        self._fake_skip_next_censored = False  # FAKE_INFO 'miss_word' 标记
         self._carry_word_next = None
         self._carry_stat_next = None
         self._carry_compliance_next = None
@@ -393,6 +395,8 @@ class DarkWorld:
         self._next_broken_pass_rate = 0.0
         self._speak_power_global_mult = 1.0
         self._physics_hunger_power = False
+        self._boss_stronger_amount = 0
+        self._fake_skip_next_censored = False
         self.created_words = []
         self.run_log = []
         self.words_spoken = {}
@@ -2411,6 +2415,11 @@ class DarkWorld:
                 lines.append("旧钥匙在你口袋里热了一下。你穿过了███。")
                 self._auto_pass_blocked = False  # 一次性
                 self._maybe_find_word(lines, hint="穿过███时你摸到了一个词")
+            elif getattr(self, '_fake_skip_next_censored', False):
+                # BUG-FIX：FAKE_INFO 'miss_word'——错过这个 censored 房间的词
+                lines.append("███。你说服自己：'别去。'你没去。")
+                lines.append("（信了假信息——错过了███里的词。）")
+                self._fake_skip_next_censored = False
             else:
                 lines.append(compress_text("███。你看不清。也许不该看清。", self.compliance))
                 # 被消音的房间——低顺从能从███缝隙里找到词
@@ -2474,6 +2483,10 @@ class DarkWorld:
                     lines.append("")
                     lines.append("你停了一下。这行字……是真的吗？")
                     self._current_fake = fake
+                    # BUG-FIX：FAKE_INFO consequence 之前从不应用
+                    consequence = fake.get("consequence", "")
+                    if consequence:
+                        self._apply_fake_consequence(consequence)
                 else:
                     # 遗刻混淆：runs>=3时，别人的字混进来
                     if self.runs >= 3 and random.random() < 0.35:
@@ -3667,6 +3680,8 @@ class DarkWorld:
         if self.retreat_marks > 0:
             enemy["atk"] += self.retreat_marks
             enemy["hp"] += self.retreat_marks * 3
+        # BUG-FIX：FAKE_INFO 'boss_stronger' 只影响 boss（这里是普通怪）
+        # 普通怪变强不消耗 _boss_stronger_amount——让下次 boss 仍带它
         player = self._player_combat_dict()
         self.combat = CombatState(player, enemy, self.area or "灰林")
         self.phase = "combat"
@@ -3711,6 +3726,13 @@ class DarkWorld:
         enemy["name"] = boss_name
         if self.retreat_marks > 0:
             enemy["atk"] += self.retreat_marks
+        # BUG-FIX：FAKE_INFO 'boss_stronger'——下次 boss HP+10、atk+2
+        if getattr(self, '_boss_stronger_amount', 0) > 0:
+            extra = self._boss_stronger_amount
+            enemy["hp"] += extra
+            enemy["atk"] += max(1, extra // 5)
+            lines.append(f"你信了那行字。boss 变强了。HP+{extra}，atk+{max(1, extra // 5)}。")
+            self._boss_stronger_amount = 0  # 一次性
 
         # "最后的话"debuff：boss HP减少
         if hasattr(self, '_last_word_boss_debuff') and self._last_word_boss_debuff:
@@ -4220,6 +4242,8 @@ class DarkWorld:
         self._next_broken_pass_rate = 0.0
         self._speak_power_global_mult = 1.0
         self._physics_hunger_power = False
+        self._boss_stronger_amount = 0
+        self._fake_skip_next_censored = False
         self.created_words = []
         self.run_log = []
         self.words_spoken = {}
@@ -5385,6 +5409,51 @@ class DarkWorld:
             for i, v in enumerate(voices, 1):
                 hint_lines.append(f"  {i}. 「{v.get('text', '?')}」")
         return "\n".join(hint_lines)
+
+    def _apply_fake_consequence(self, consequence):
+        """应用 FAKE_INFO 的后果。consequence 格式：
+        - 'r_alert'：R 牌+1
+        - 'compliance+N' / 'compliance-N'：静止度±N
+        - 'boss_stronger'：下次 boss atk+2, hp+10
+        - 'forget_pain'：遗忘'痛'
+        - 'her-N' / 'her+N'：她的痕迹±N
+        - 'miss_word'：错过███里的词（被动，sets _fake_skip_next_censored）
+        支持逗号分隔多效果，如 'compliance+3,boss_stronger'
+        """
+        if not consequence:
+            return
+        # 多个效果用逗号分隔
+        for part in consequence.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if part == "r_alert":
+                self.r_flags = min(3, self.r_flags + 1)
+            elif part.startswith("compliance") and ("+" in part[10:] or "-" in part[10:]):
+                # compliance+N / compliance-N
+                m = re.search(r'([+-]\d+)', part)
+                if m:
+                    self._change_compliance(int(m.group(1)))
+            elif part == "boss_stronger":
+                # 下次 boss 变强——用 _next_boss_hp_reduction 反向
+                # 但语义不同，hp_reduction 是减，新字段是加
+                # 用 _boss_stronger 字段
+                cur = getattr(self, '_boss_stronger_amount', 0)
+                self._boss_stronger_amount = cur + 10  # +10hp, +2atk
+            elif part == "forget_pain":
+                if "痛" in self.words:
+                    self._remove_word("痛")
+                    self.forgotten_words.append("痛")
+            elif part.startswith("her"):
+                m = re.search(r'([+-]\d+)', part)
+                if m:
+                    self.her_presence = max(0, self.her_presence + int(m.group(1)))
+            elif part == "miss_word":
+                # 标记：错过下一个 censored 房间的发词
+                self._fake_skip_next_censored = True
+            else:
+                # 兜底：当作 _apply_special_effect 的 effect 处理
+                self._apply_special_effect(part)
 
     def _apply_special_effect(self, effect_str):
         """解析效果字符串并应用。格式：'compliance-2,her+1,饿+2,word_xxx'"""
