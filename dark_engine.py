@@ -269,7 +269,7 @@ class DarkWorld:
             return self._show_echoes()
         if instruction == "词库":
             return self._show_words()
-        if instruction.startswith("调 "):
+        if instruction.startswith("调 ") or instruction.startswith("蜕 "):
             return self._cmd_move_chamber(instruction)
 
         if self.phase == "init":
@@ -395,6 +395,8 @@ class DarkWorld:
         self._next_broken_pass_rate = 0.0
         self._speak_power_global_mult = 1.0
         self._physics_hunger_power = False
+        # BUG-FIX：跨新角时清掉上一局的标记
+        self._old_age_death = False
         self._boss_stronger_amount = 0
         self._fake_skip_next_censored = False
         self.created_words = []
@@ -4864,7 +4866,8 @@ class DarkWorld:
             return self._start_creation()
         elif inst == "脱出":
             # BUG-FIX：之前 '脱出' 没加遗刻，玩家'留'存档后脱出=0 遗刻
-            # 改用 _retire() 走标准 +1 遗刻
+            # 真正 +1 遗刻（之前 comment 说改用 _retire() 但忘了调）
+            self.echoes += 1
             self._save_meta()
             self.phase = "init"
             return f"再见。残壁上的字会留着。'新角'再来。遗刻{self.echoes}。"
@@ -5710,9 +5713,9 @@ class DarkWorld:
                     self.stats[s] = max(1, self.stats[s] - 1)
         if self.age >= 70:
             # F-1 修复：老年死亡走完整 _handle_death 流程（叙事/遗刻/成就/墙书）
-            death_text = self._handle_death()
-            # 老年死亡的额外标记，便于"你是谁"区分
+            # BUG-FIX：必须先设标记再调 _handle_death，否则叙事分支走"你倒下了"分支
             self._old_age_death = True
+            death_text = self._handle_death()
             # BUG-FIX：返回死亡文案，让 _guild_work 直接展示，不渲染镇文本
             return death_text
         return None
