@@ -209,6 +209,11 @@ class DarkWorld:
         self._fork_left = None  # 分叉左边的房间列表
         self._fork_right = None  # 分叉右边的房间列表
 
+        # BUG-FIX：每个新 DarkWorld 实例都重置 WORD_WEAPON 全局表，
+        # 否则上一局创建的合成词/创造词残留影响后续游戏
+        import dark_data
+        dark_data.WORD_WEAPON = copy.deepcopy(_WORD_WEAPON_ORIG)
+
         self._load()
 
     # ── 存档 ──────────────────────────────────
