@@ -3763,6 +3763,8 @@ class DarkWorld:
         return "\n".join(lines)
 
     def _player_combat_dict(self):
+        # BUG-FIX：原代码调 _apply_transform_effects 两次，浪费（不影响随机性）
+        transform_power_mult, transform_self_harm_mult = self._apply_transform_effects()[:2]
         return {
             "hp": self.hp, "max_hp": self.max_hp,
             "mp": self.mp, "max_mp": self.max_mp,
@@ -3782,8 +3784,8 @@ class DarkWorld:
             "_tamed_half_damage": getattr(self, '_tamed_half_damage', False),
             "heart_slots": list(getattr(self, 'heart_slots', [])),
             "_layer": self.area or "",
-            "transform_power_mult": self._apply_transform_effects()[0],
-            "transform_self_harm_mult": self._apply_transform_effects()[1],
+            "transform_power_mult": transform_power_mult,
+            "transform_self_harm_mult": transform_self_harm_mult,
             "_devil_self_harm_mult": dict(getattr(self, '_devil_self_harm_mult', {})),
             "her_presence": self.her_presence,
             "silence_counter": getattr(self, 'silence_counter', 0),
