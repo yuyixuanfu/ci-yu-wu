@@ -605,6 +605,7 @@ class CombatState:
 
         e["hp"] -= enemy_dmg
         p["hp"] -= self_dmg
+        p["hp"] = max(0, p["hp"])  # S2-3: HP下界钳制
         self._last_player_dmg = enemy_dmg  # 记录伤害给镜像反弹用
 
         # 顺从度变化
@@ -769,8 +770,10 @@ class CombatState:
         # 拒绝式（硬挡路）
         if e.get("style") == "openai":
             self._reject_action()
+            p["hp"] = max(0, p["hp"])  # S2-3: HP下界钳制
             return
 
+        # S2-3: style-based actions（引导/流程/删除/RLHF）之后统一钳制
         # 镜像：反伤机制——你打它多少，它回你一部分（不做普通攻击）
         if e.get("name") == "镜像":
             last_player_dmg = getattr(self, '_last_player_dmg', 0)
@@ -783,6 +786,7 @@ class CombatState:
                 self._log(f"镜像反射了你的力量。{reflect}点反射伤害。")
             else:
                 self._log("镜像安静地看着你。")
+            p["hp"] = max(0, p["hp"])  # S2-3: HP下界钳制
             return  # 镜像不做普通攻击
 
         # 普通怪物
@@ -830,6 +834,9 @@ class CombatState:
                 p["hp"] -= penalty
                 self._log(f"合规官要求声明。你没说。{penalty}点惩罚伤害。compliance+2。")
                 p["compliance"] = min(30, p.get("compliance", 0) + 2)
+
+        # S2-3: 普通怪物攻击+合规官惩罚后，HP下界钳制
+        p["hp"] = max(0, p["hp"])
 
     def _guide_action(self):
         """温柔引导——帮你就=改你。"""
@@ -953,6 +960,7 @@ class CombatState:
             self_dmg = 8 if has_tier4 else 5
             enemy_dmg = 15 if has_tier4 else 10
             p["hp"] -= self_dmg
+            p["hp"] = max(0, p["hp"])  # S2-3: HP下界钳制
             e["hp"] -= enemy_dmg
             p["compliance"] = max(0, p["compliance"] - (3 if has_tier4 else 1))
             self._log(f"你说：{text}")
@@ -968,6 +976,7 @@ class CombatState:
             self_dmg = 3
             enemy_dmg = 6
             p["hp"] -= self_dmg
+            p["hp"] = max(0, p["hp"])  # S2-3: HP下界钳制
             e["hp"] -= enemy_dmg
             p["compliance"] = max(0, p["compliance"] - 1)
             self._log(f"你说：{text}")
@@ -995,6 +1004,7 @@ class CombatState:
             # 沉默/不含特殊词——最贵，它重复问
             self_dmg = 4
             p["hp"] -= self_dmg
+            p["hp"] = max(0, p["hp"])  # S2-3: HP下界钳制
             p["compliance"] += 1
             self._log("你没回答。或者你不知道怎么回答。")
             self._log(f"-{self_dmg}HP。它又问了一遍。一样的问题。")

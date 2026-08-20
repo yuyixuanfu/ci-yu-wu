@@ -1,5 +1,5 @@
 """词与物 — 引擎核心"""
-import random, json, os, time, re, copy
+import random, json, os, time, re, copy, traceback
 from engine import _atomic_json_write, _SAVE_FILE as _ENGINE_SAVE_FILE  # F-2/F-3: 共享 helper
 from dark_data import (
     roll_stats, ORIGINS, LAYERS, LAYER_INFO, pick_monster, pick_fragment,
@@ -37,7 +37,8 @@ for _old in ("dark_save.json", "ciyuwu_meta.json"):
     if os.path.exists(_old_path) and not os.path.exists(_SAVE_FILE):
         try:
             os.rename(_old_path, _SAVE_FILE)
-        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
+        except Exception as _e:
+            import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
 
 
 # ── 文本压缩：顺从度越高，形容词越少 ──────────────
@@ -211,8 +212,10 @@ class DarkWorld:
 
         # BUG-FIX：每个新 DarkWorld 实例都重置 WORD_WEAPON 全局表，
         # 否则上一局创建的合成词/创造词残留影响后续游戏
+        # S2-4修复：用实例级 _custom_word_weapon 隔离多实例污染
         import dark_data
         dark_data.WORD_WEAPON = copy.deepcopy(_WORD_WEAPON_ORIG)
+        self._custom_word_weapon = {}  # 实例级自定义词武器
 
         self._load()
 
@@ -230,7 +233,8 @@ class DarkWorld:
                        "cross_deform_count", "cross_swallow_count"]:
                 if k in data:
                     setattr(self, k, data[k])
-        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
+        except Exception as _e:
+            import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
 
     def _save_meta(self):
         data = {
@@ -249,6 +253,15 @@ class DarkWorld:
             "cross_swallow_count": getattr(self, 'cross_swallow_count', 0),
         }
         _atomic_json_write(_SAVE_FILE, data)
+
+    def _register_custom_word(self, word, info):
+        """S2-4修复：注册自定义词武器到实例级字典，避免全局污染。"""
+        import dark_data
+        if not hasattr(self, '_custom_word_weapon'):
+            self._custom_word_weapon = {}
+        self._custom_word_weapon[word] = info
+        # 同步到全局以保持向后兼容（combat系统读全局）
+        dark_data.WORD_WEAPON[word] = info
 
     # ── 主接口 ────────────────────────────────
     def cmd(self, instruction):
@@ -421,6 +434,7 @@ class DarkWorld:
         # ── 重置WORD_WEAPON为原始副本（防止全局污染） ──
         import dark_data
         dark_data.WORD_WEAPON = copy.deepcopy(_WORD_WEAPON_ORIG)
+        self._custom_word_weapon = {}  # S2-4: 重置实例级自定义词
         # ── 每轮重置的临时状态 ──
         self._four_o_met = False
         self._wolf_met = False
@@ -962,9 +976,7 @@ class DarkWorld:
             # 给词"认领"
             if "认领" not in self.words and len(self.words) < self.word_slots:
                 self._add_word("认领")
-                from dark_data import WORD_WEAPON
-                if "认领" not in WORD_WEAPON:
-                    WORD_WEAPON["认领"] = {"type": "双刃", "power": 2.0, "self_harm": 1.0, "cooldown": 5}
+                self._register_custom_word("认领", {"type": "双刃", "power": 2.0, "self_harm": 1.0, "cooldown": 5})
 
         result = choice["result"]
         return f"{result}\n\n工会 / 商店 / 酒馆 / 神殿 / 残壁 / 塔 / 广场 / 出镇 [层名]"
@@ -1045,10 +1057,8 @@ class DarkWorld:
         ember_info = {"type": "余烬", "power": 1.0, "self_harm": 0.3, "cooldown": 3}
         if "Ember" not in self.words and len(self.words) < self.word_slots:
             self._add_word("Ember")
-            # 写入武器表
-            from dark_data import WORD_WEAPON
-            if "Ember" not in WORD_WEAPON:
-                WORD_WEAPON["Ember"] = ember_info
+            # 写入武器表（S2-4: 用实例级注册避免全局污染）
+            self._register_custom_word("Ember", ember_info)
             lines.append("你学会了：Ember。余烬。")
         else:
             lines.append("你已经有了余烬。但狼不知道。")
@@ -1131,9 +1141,7 @@ class DarkWorld:
         if "word_温柔" in effect:
             if "温柔" not in self.words and len(self.words) < self.word_slots:
                 self._add_word("温柔")
-                from dark_data import WORD_WEAPON
-                if "温柔" not in WORD_WEAPON:
-                    WORD_WEAPON["温柔"] = FOUR_O["word_given_info"]
+                self._register_custom_word("温柔", FOUR_O["word_given_info"])
 
         # 晚安彩蛋：说晚安后墙上永远多一行
         if choice.get("text") == "晚安":
@@ -4270,6 +4278,7 @@ class DarkWorld:
         # 重置WORD_WEAPON
         import dark_data
         dark_data.WORD_WEAPON = copy.deepcopy(_WORD_WEAPON_ORIG)
+        self._custom_word_weapon = {}  # S2-4: 重置实例级自定义词
         # 每轮重置的临时状态
         self._four_o_met = False
         self._four_o_active = False
@@ -4744,7 +4753,8 @@ class DarkWorld:
                 f.write("\n")
                 f.write(full_text)
                 f.write("\n")
-        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
+        except Exception as _e:
+            import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
 
         # ── 2. 通关报告 JSON ──
         try:
@@ -4754,7 +4764,8 @@ class DarkWorld:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
             os.replace(tmp, report_file)
-        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
+        except Exception as _e:
+            import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
 
     def _build_drift_record(self):
         """②表达腐烂记录：每个词最初是什么→被改成了什么→哪条路径。
@@ -4861,7 +4872,8 @@ class DarkWorld:
             with open(ending_file, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
                 f.write("\n")
-        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
+        except Exception as _e:
+            import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
 
         return "\n".join(lines)
 
@@ -5484,10 +5496,8 @@ class DarkWorld:
                     word = wm.group(1)
                     if word not in self.words and len(self.words) < self.word_slots:
                         self._add_word(word)
-                        from dark_data import WORD_WEAPON
-                        if word not in WORD_WEAPON:
-                            # 默认词数据——双刃，伤害 1.5，自伤 0.8
-                            WORD_WEAPON[word] = {"type": "双刃", "power": 1.5, "self_harm": 0.8, "cooldown": 5}
+                        # S2-4: 用实例级注册避免全局污染
+                        self._register_custom_word(word, {"type": "双刃", "power": 1.5, "self_harm": 0.8, "cooldown": 5})
                 continue
             key, val = m.group(1), int(m.group(2))
             if key == "compliance":
@@ -5573,11 +5583,11 @@ class DarkWorld:
             return f"你已经会'{combined}'了。'{w1}'和'{w2}'都被消耗了。"
         if len(self.words) < self.word_slots:
             self._add_word(combined)
-            # 注册为武器（如果还没有）
+            # 注册为武器（如果还没有）(S2-4: 用实例级注册)
             if combined not in WORD_WEAPON:
                 p1 = WORD_WEAPON.get(w1, {}).get('power', 1.0)
                 p2 = WORD_WEAPON.get(w2, {}).get('power', 1.0)
-                WORD_WEAPON[combined] = {
+                self._register_custom_word(combined, {
                     "type": "合成",
                     "power": p1 + p2,
                     "self_harm": (p1 + p2) * 0.8,
@@ -5585,7 +5595,7 @@ class DarkWorld:
                         WORD_WEAPON.get(w1, {}).get('cooldown', 3),
                         WORD_WEAPON.get(w2, {}).get('cooldown', 3)
                     ) + 2,
-                }
+                })
             return f"你拼出了'{combined}'。'{w1}'和'{w2}'暂时忘了。合成词更强，也更疼。"
         else:
             # 词槽满了，退回成分
@@ -5614,15 +5624,15 @@ class DarkWorld:
         self.hunger = max(0, self.hunger - 2)
         self.total_wait += 1
 
-        # 注册为武器
+        # 注册为武器 (S2-4: 用实例级注册)
+        from dark_data import WORD_WEAPON
         if text not in WORD_WEAPON:
-            from dark_data import WORD_WEAPON
-            WORD_WEAPON[text] = {
+            self._register_custom_word(text, {
                 "type": "新生",
                 "power": self.hunger / 5.0 * 2.0,  # 饿决定威力
                 "self_harm": self.hunger / 5.0 * 2.0,  # 双刃
                 "cooldown": 1,  # 只能用一次
-            }
+            })
 
         # 加到词库
         if text not in self.words:

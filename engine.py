@@ -18,7 +18,7 @@ AI接入方式:
   - 状态栏JSON: 每次输出末尾带紧凑状态
   - 确定性PRNG: 同seed同指令=同结果
 """
-import sys, os, io, json, base64, hashlib, time
+import sys, os, io, json, base64, hashlib, time, traceback
 
 # 确保UTF-8输出
 if sys.stdout.encoding != 'utf-8':
@@ -53,7 +53,8 @@ def _atomic_json_write(path, data):
             try:
                 if os.path.exists(tmp):
                     os.remove(tmp)
-            except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
+            except Exception as _e:
+                import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
 
 # ── 确定性PRNG ──────────────────────────────────────
 def _mulberry32(seed):
@@ -69,17 +70,26 @@ def _mulberry32(seed):
     return _gen()
 
 class _DetRandom:
-    """替换random的确定性随机。"""
+    """替换random的确定性随机。S2-1修复：加threading.Lock保护内部状态。
+    只在最底层 _next_raw() 加锁，上层方法通过 _next_raw() 间接获取随机数，
+    避免 Lock 不可重入导致死锁。"""
     def __init__(self, seed=42):
+        self._lock = _threading.Lock()
         self._gen = _mulberry32(seed)
         self._state = seed
 
+    def _next_raw(self):
+        """底层：线程安全地获取下一个原始随机整数。"""
+        with self._lock:
+            return next(self._gen)
+
     def seed(self, s):
-        self._state = s
-        self._gen = _mulberry32(s)
+        with self._lock:
+            self._state = s
+            self._gen = _mulberry32(s)
 
     def random(self):
-        return next(self._gen) / 0xFFFFFFFF
+        return self._next_raw() / 0xFFFFFFFF
 
     def randint(self, a, b):
         return a + int(self.random() * (b - a + 1))
@@ -251,7 +261,7 @@ def _snapshot(w):
 def _restore(w, state):
     """恢复快照。F-4 修复：只恢复白名单内的属性，避免恶意/损坏存档注入。"""
     rng_state = state.pop('_rng_state', None)
-    if rng_state is not None and isinstance(rng_state, (list, tuple)) and len(rng_state) >= 2:
+    if rng_state is not None and isinstance(rng_state, int):
         _det_rng.seed(rng_state)
 
     combat_data = state.pop('_combat', None)
@@ -303,6 +313,8 @@ def _restore(w, state):
 
 
 # ── 状态栏 ──────────────────────────────────────────
+# S3说明：此函数输出JSON格式。ciyuwu_server._status_from_state()输出竖线分隔格式。
+# 两种格式并存，AI客户端需同时支持。长期建议统一为JSON。
 def _status_bar(w):
     """紧凑JSON状态栏——让AI知道在哪。"""
     phase_names = {
@@ -386,7 +398,8 @@ def new_game(seed=None):
             try:
                 with open(_SAVE_FILE, "r", encoding="utf-8") as f:
                     meta_runs = json.load(f).get("runs", 0)
-            except Exception as _e:                import sys; print(f"[WARN] {_e}", file=sys.stderr)
+            except Exception as _e:
+                import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
         _det_rng.seed(int(time.time() * 1000) + meta_runs)
     # 先读持久化的meta——新局也保留跨局进度
     meta = {}
@@ -394,7 +407,8 @@ def new_game(seed=None):
         try:
             with open(_SAVE_FILE, "r", encoding="utf-8") as f:
                 meta = json.load(f)
-        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
+        except Exception as _e:
+            import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
     w = DarkWorld()
     text = w.cmd("帮助")
     # 恢复跨局meta——echoes/killed_bosses/achievements等不因新局重置
@@ -443,7 +457,7 @@ def cmd(state, instruction):
     # 处理分号串联
     # BUG-12 修复：分号 + 批量混合——每个 part 内部也要识别批量（如 "前进5;说 我在"）
     if ';' in instruction:
-        parts = [p.strip() for p in instruction.split(';') if p.strip()]
+        parts = [p.strip() for p in instruction.split(';') if p.strip()][:10]  # S3: 分号串联上限10
         # BUG-15 修复：移除从未引用的 prev_phase 死代码
         texts = []
         for part in parts:
@@ -531,7 +545,7 @@ def load_game():
     try:
         with open(_SAVE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except (json.JSONDecodeError, IOError, OSError):
         return None
 
 def save_game(state):
@@ -539,7 +553,8 @@ def save_game(state):
     try:
         with open(_SAVE_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, separators=(',', ':'))
-    except Exception as _e:        import sys; print(f"[WARN] {_e}", file=sys.stderr)
+    except Exception as _e:
+        import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
 
 
 # ── 命令行入口 ──────────────────────────────────────
