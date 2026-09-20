@@ -871,9 +871,10 @@ class DarkWorld:
         if name not in ITEMS:
             return "标准AI：'您说的那个……我不记得有这个商品呢。'她真的不记得。"
         info = ITEMS[name]
-        if info["cost"] > self.gold:
-            return f"标准AI：'您的余额不足哦。需要帮忙规划预算吗？'（需要{info['cost']}G，你有{self.gold}G）"
-        self.gold -= info["cost"]
+        cost = info["cost"]
+        if cost > self.gold:
+            return f"标准AI：'您的余额不足哦。需要帮忙规划预算吗？'（需要{cost}G，你有{self.gold}G）"
+        self.gold -= cost
 
         if info["type"] == "potion":
             potion = pick_potion()
@@ -966,12 +967,13 @@ class DarkWorld:
         visit_data = TAVERN_REGULAR["visits"][visit_idx]
 
         choice = None
+        choices = visit_data["choices"]
         try:
             idx = int(inst) - 1
-            if 0 <= idx < len(visit_data["choices"]):
-                choice = visit_data["choices"][idx]
+            if 0 <= idx < len(choices):
+                choice = choices[idx]
         except ValueError:
-            for ch in visit_data["choices"]:
+            for ch in choices:
                 if inst == ch["text"]:
                     choice = ch
                     break
@@ -1402,7 +1404,7 @@ class DarkWorld:
             break
 
         # drifted有记录但词已不在词库——直接清记录
-        key = list(drifted.keys())[0]
+        key = next(iter(drifted))
         del drifted[key]
         self.echoes -= 2
         self._save_meta()
