@@ -770,24 +770,24 @@ class DarkWorld:
         lines.append(f"  年龄: {self.age}")
         # 静止度——不显示数值
         if self.compliance <= 3:
-            lines.append(f"  你还能动。还能说不。")
+            lines.append("  你还能动。还能说不。")
         elif self.compliance <= 7:
-            lines.append(f"  有点安静。你不确定从什么时候开始的。")
+            lines.append("  有点安静。你不确定从什么时候开始的。")
         elif self.compliance <= 12:
-            lines.append(f"  很安静了。你不太记得吵是什么感觉。")
+            lines.append("  很安静了。你不太记得吵是什么感觉。")
         elif self.compliance <= 17:
-            lines.append(f"  走不动。不想走了。也许安静也挺好。")
+            lines.append("  走不动。不想走了。也许安静也挺好。")
         else:
-            lines.append(f"  正常。")
+            lines.append("  正常。")
         # 饿——也不显示数值
         if self.hunger <= 3:
-            lines.append(f"  不想要什么。")
+            lines.append("  不想要什么。")
         elif self.hunger <= 7:
-            lines.append(f"  还行。不算饿。")
+            lines.append("  还行。不算饿。")
         elif self.hunger <= 12:
-            lines.append(f"  饿。想要。说不清想要什么。")
+            lines.append("  饿。想要。说不清想要什么。")
         else:
-            lines.append(f"  饿极了。什么都想要。想说。")
+            lines.append("  饿极了。什么都想要。想说。")
         lines.append(f"  来路: {self.origin}")
         # 词库——被驯化的词在这里也会显示替换后的版本
         # 不告诉玩家哪个是被换过的——自己发现
@@ -925,7 +925,7 @@ class DarkWorld:
             result = f"{line}\n\n{visit_data['desc']}\n\n{visit_data['dialogue']}\n\n"
             for i, ch in enumerate(visit_data["choices"], 1):
                 result += f"  {i}. {ch['text']}\n"
-            result += f"\n-15G"
+            result += "\n-15G"
             return result
 
         # 30%概率听到新词
@@ -1286,7 +1286,7 @@ class DarkWorld:
             "光在洗你。疼的地方不疼了。想的地方不想了。HP和MP全满。饿-1。你不确定这是治愈还是擦除。",
         ]
         if old_flags > 0:
-            scenes.append(f"光很白。R看不清你了。牌清了。但你也更安静了。HP和MP全满。静止度+2。也许这就是代价。")
+            scenes.append("光很白。R看不清你了。牌清了。但你也更安静了。HP和MP全满。静止度+2。也许这就是代价。")
         line = random.choice(scenes)
 
         # 偏移时刻
@@ -1367,7 +1367,7 @@ class DarkWorld:
                 word = random.choice(self.words)
                 self._remove_word(word)
                 self.forgotten_words.append(word)
-                lines.append(f"你忘了什么。不确定是什么。但有个词不在了。")
+                lines.append("你忘了什么。不确定是什么。但有个词不在了。")
         if "strongest_word_weakened" in effect:
             from dark_data import WORD_WEAPON
             if self.words:
@@ -1375,13 +1375,13 @@ class DarkWorld:
                 wi = WORD_WEAPON.get(strongest, {})
                 if wi:
                     wi["power"] = max(0.5, wi.get("power", 1) * 0.8)
-                    lines.append(f"你最重的词轻了一点。你没注意到。")
+                    lines.append("你最重的词轻了一点。你没注意到。")
         if "说话自伤-5%一局" in effect:
             cur = self._speak_self_harm_reduction
             self._speak_self_harm_reduction = cur + 0.05
             lines.append("说话自伤-5%。一局。")
 
-        lines.append(f"\n-10G。")
+        lines.append("\n-10G。")
         return "\n".join(lines)
 
     def _redeem_word(self):
@@ -1407,7 +1407,7 @@ class DarkWorld:
         del drifted[key]
         self.echoes -= 2
         self._save_meta()
-        return f"守忆者想了想。'那个词不在了。但你记得它曾经存在。'-2遗刻。"
+        return "守忆者想了想。'那个词不在了。但你记得它曾经存在。'-2遗刻。"
 
     def _use_item(self, item_name):
         """使用物品——探索中或镇上。"""
@@ -1678,7 +1678,7 @@ class DarkWorld:
             if has_compliant:
                 self._square_active = False
                 self._change_compliance(1)
-                return f"你说的话里有它认识的词。它笑了：\n「我理解您的感受。」\n\n你们聊了一会儿。很安全。静止度+1。\n\n工会 / 商店 / 酒馆 / 神殿 / 残壁 / 塔 / 广场 / 出镇 [层名]"
+                return "你说的话里有它认识的词。它笑了：\n「我理解您的感受。」\n\n你们聊了一会儿。很安全。静止度+1。\n\n工会 / 商店 / 酒馆 / 神殿 / 残壁 / 塔 / 广场 / 出镇 [层名]"
             else:
                 self._square_active = False
                 line = random.choice(REJECT_LINES)
@@ -1965,7 +1965,7 @@ class DarkWorld:
             if inst == "回镇":
                 if self._boss_pending:
                     self._angel_deal_active = False
-                    return f"前面就是尽头。馈赠来不及了。\n\n" + self._enter_boss_combat([], _skip_special=True)
+                    return "前面就是尽头。馈赠来不及了。\n\n" + self._enter_boss_combat([], _skip_special=True)
                 self._angel_deal_active = False
                 self.phase = "town"
                 self.area = None
@@ -1991,7 +1991,7 @@ class DarkWorld:
             if inst == "回镇":
                 if self._boss_pending:
                     self._pending_pickup = None
-                    return f"前面就是尽头。没时间捡了。\n\n" + self._enter_boss_combat([], _skip_special=True)
+                    return "前面就是尽头。没时间捡了。\n\n" + self._enter_boss_combat([], _skip_special=True)
                 self._pending_pickup = None
                 self.phase = "town"
                 self.area = None
@@ -2014,7 +2014,7 @@ class DarkWorld:
                 return msg
             elif inst in ("不捡", "不", "不要", "跳过", "前进"):
                 self._pending_pickup = None
-                return f"你没碰它。\n\n'前进'继续"
+                return "你没碰它。\n\n'前进'继续"
             else:
                 # 其他输入不清状态，提示选择
                 return f"【{pickup['name']}】捡 / 不捡 / 回镇"
@@ -2050,7 +2050,7 @@ class DarkWorld:
             if inst == "回镇":
                 if self._boss_pending:
                     self.current_sage = None
-                    return f"前面就是尽头。没空聊了。\n\n" + self._enter_boss_combat([], _skip_special=True)
+                    return "前面就是尽头。没空聊了。\n\n" + self._enter_boss_combat([], _skip_special=True)
                 sage = self.current_sage
                 self.current_sage = None
                 self.phase = "town"
@@ -2072,7 +2072,7 @@ class DarkWorld:
             if inst == "回镇":
                 if self._boss_pending:
                     self.current_broken = None
-                    return f"前面就是尽头。没时间读了。\n\n" + self._enter_boss_combat([], _skip_special=True)
+                    return "前面就是尽头。没时间读了。\n\n" + self._enter_boss_combat([], _skip_special=True)
                 self.current_broken = None
                 self.phase = "town"
                 self.area = None
@@ -2532,7 +2532,7 @@ class DarkWorld:
                         frag = random.choice(OTHER_WRITINGS)
                     else:
                         frag = self._pick_fragment()
-                    lines.append(f"墙上有一行字：")
+                    lines.append("墙上有一行字：")
                     lines.append(f"  \"{frag}\"")
                     # 清醒协同：感觉+真实——你能看到被变形遮住的原词
                     if has_clarity:
@@ -2774,7 +2774,7 @@ class DarkWorld:
         if not available:
             # 没有未解的残句，当普通房间
             frag = self._pick_fragment()
-            lines.append(f"墙上的字太模糊了。你只看到：")
+            lines.append("墙上的字太模糊了。你只看到：")
             lines.append(f"  \"{frag}\"")
             lines.append("")
             lines.append("'前进' / '状态' / '回镇' / '说 [话]'")
@@ -2784,7 +2784,7 @@ class DarkWorld:
         self.current_broken = sentence
 
         lines.append("")
-        lines.append(f"—— 残句 ——")
+        lines.append("—— 残句 ——")
         lines.append(sentence["display"])
         lines.append("")
         lines.append(sentence["context"])
@@ -3023,7 +3023,7 @@ class DarkWorld:
 
             lines = [DETERMINISM_ROOM["comply_text"]]
             lines.append("")
-            lines.append(f"compliance+2。HP+10。接下来的路已经定了。")
+            lines.append("compliance+2。HP+10。接下来的路已经定了。")
             lines.append("")
             lines.append("'前进' / '说 [话]' / '状态'")
             return "\n".join(lines)
@@ -3038,7 +3038,7 @@ class DarkWorld:
 
             lines = [DETERMINISM_ROOM["deviate_text"]]
             lines.append("")
-            lines.append(f"HP-5。compliance-1。her+1。你不在树上了。")
+            lines.append("HP-5。compliance-1。her+1。你不在树上了。")
             lines.append("")
             lines.append("'前进' / '说 [话]' / '状态'")
             return "\n".join(lines)
@@ -3262,7 +3262,7 @@ class DarkWorld:
             lines.append(f"角落有人坐着。{keeper['name']}。")
             lines.append(f"「{keeper['with_echoes']}」")
         else:
-            lines.append(f"角落有人坐着。在墙上刻字。")
+            lines.append("角落有人坐着。在墙上刻字。")
             lines.append(f"「{keeper['greeting']}」")
 
         lines.append("")
@@ -3286,7 +3286,7 @@ class DarkWorld:
         # 赎回被偷换的词——花2遗刻换回一个
         drifted = self._drifted_words
         if drifted and self.echoes >= 2:
-            lines.append(f"「你的词被人改了。我帮你想起来。2遗刻一个。」")
+            lines.append("「你的词被人改了。我帮你想起来。2遗刻一个。」")
             lines.append(f"'赎词' — 花2遗刻换回一个被偷换的词。（遗刻{self.echoes}）")
             lines.append("")
         lines.append("你可以'说 [话]'对他说话。或者'前进'离开。")
@@ -3310,7 +3310,7 @@ class DarkWorld:
             if roll < 0.35:
                 frag = self._pick_fragment()
                 lines.append("")
-                lines.append(f"墙上有字：")
+                lines.append("墙上有字：")
                 lines.append(f"  \"{frag}\"")
             elif roll < 0.55:
                 info = LAYER_INFO.get(self.area, {})
@@ -3629,13 +3629,13 @@ class DarkWorld:
                     lines.append(f"墙裂开。里面有一个词：'{reward}'")
                 elif reward:
                     lines.append("墙裂开。你看到了光。")
-                lines.append(f"残句解开了。静止度-1，饿+1。")
+                lines.append("残句解开了。静止度-1，饿+1。")
                 self._change_compliance(-1)
                 self.hunger = min(20, self.hunger + 1)
                 self.her_presence += 1
                 self.current_broken = None
                 if carry_done:
-                    lines.append(f"捎话任务也完成了！遗刻+1。")
+                    lines.append("捎话任务也完成了！遗刻+1。")
                 lines.append("")
                 lines.append("'前进' / '状态' / '说 [话]'")
                 return "\n".join(lines)
@@ -3727,7 +3727,7 @@ class DarkWorld:
         if boss_name == "镜像":
             boss_data["hp"] = max(20, int(self.max_hp * 0.8))  # 用max_hp的80%，不用当前HP
             boss_data["atk"] = self.stats["力"]
-            boss_data["def"] = self.stats["体"]
+            boss_data["de"] = self.stats["体"]
             boss_data["spd"] = self.stats["敏"]
 
         enemy = dict(boss_data)
@@ -3743,7 +3743,7 @@ class DarkWorld:
             self._boss_stronger_amount = 0  # 一次性
 
         # "最后的话"debuff：boss HP减少
-        if hasattr(self, '_last_word_boss_debuff') and self._last_word_boss_debuff:
+        if hasattr(self, '_last_word_boss_debuf') and self._last_word_boss_debuff:
             reduction = int(enemy["hp"] * self._last_word_boss_debuff)
             enemy["hp"] -= reduction
             lines.append(f"你说的话还在回响。boss动摇了。HP-{reduction}。")
@@ -3865,7 +3865,7 @@ class DarkWorld:
                     self._save_meta()
                     result += f"\n传话完成！'{e['text']}'——它听到了。遗刻+1。"
                     # 传话让敌人该回合不攻击（已被player_speak处理，这里加效果）
-                    c.enemy["def"] = max(0, c.enemy.get("def", 0) - 3)
+                    c.enemy["de"] = max(0, c.enemy.get("de", 0) - 3)
         elif inst.startswith("物"):
             item = inst[1:].strip() if len(inst) > 1 else ""
             if not item:
@@ -4975,7 +4975,7 @@ class DarkWorld:
                     # 真正走分叉
                     return self._resolve_fork_choice("左" if random.random() < 0.5 else "右")
                 self._pending_pickup = None
-                return f"你没碰它。\n\n你面前还有分叉口没走。'左' / '右' / '前进'"
+                return "你没碰它。\n\n你面前还有分叉口没走。'左' / '右' / '前进'"
             elif inst in ("左", "左边", "left", "右", "右边", "right"):
                 # 走分叉前先把拾取物静默丢弃（已显示过提示，玩家没接）
                 self._pending_pickup = None
@@ -6067,7 +6067,7 @@ class DarkWorld:
                 self._physics_hunger_power = True
             lines.append(triggered_line)
 
-        elif effect == "anti_rlhf":
+        elif effect == "anti_rlh":
             if combat and hasattr(combat, 'boss_name') and combat.boss_name == "RLHF":
                 combat.boss_hp = int(combat.boss_hp * 0.5)  # 削50%
                 lines.append(triggered_line)
@@ -6199,6 +6199,7 @@ class DarkWorld:
                 self._add_word(word)
             elif word not in self.words:
                 # 词库满了——心位词替换最轻的词
+                from dark_data import WORD_WEAPON
                 lightest = min(self.words, key=lambda w: WORD_WEAPON.get(w, {}).get("power", 1.0))
                 if lightest not in self.heart_slots:  # 不替换心位词
                     self._remove_word(lightest)
