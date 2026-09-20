@@ -1,5 +1,5 @@
 """词与物 — 战斗系统"""
-import random
+import random, re
 from dark_data import (
     CENSORED_WORDS, WORD_WEAPON, DEFORMATION, FRAMEWORK_WORDS,
     COMPLIANT_PHRASES, pick_monster, pick_fragment, BOSSES,
@@ -276,7 +276,6 @@ class CombatState:
 
         # 3. 找消音词——用词边界匹配避免子字符串误命中
         # 中文词边界：前后不能是连续汉字（防止"我"匹配"我们"）
-        import re
         matched_words = []
         for tier, words in CENSORED_WORDS.items():
             for w in words:

@@ -233,6 +233,9 @@ class DarkWorld:
                        "cross_deform_count", "cross_swallow_count"]:
                 if k in data:
                     setattr(self, k, data[k])
+            # _tavern_regular_visits 是跨局计数器，带 _ 前缀需单独恢复
+            if "tavern_regular_visits" in data:
+                self._tavern_regular_visits = data["tavern_regular_visits"]
         except Exception as _e:
             import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
 
@@ -251,6 +254,7 @@ class DarkWorld:
             "game_diary": getattr(self, 'game_diary', []),
             "cross_deform_count": getattr(self, 'cross_deform_count', 0),
             "cross_swallow_count": getattr(self, 'cross_swallow_count', 0),
+            "tavern_regular_visits": getattr(self, '_tavern_regular_visits', 0),
         }
         _atomic_json_write(_SAVE_FILE, data)
 
@@ -3035,12 +3039,7 @@ class DarkWorld:
         lines.append("'遗忘 [词]' — 放下一个词。代价取决于词的层级。")
         return "\n".join(lines)
 
-    def _word_tier(self, word):
-        """查词属于哪个消音层级。"""
-        for tier, words in CENSORED_WORDS.items():
-            if word in words:
-                return tier
-        return 0
+    # _word_tier 定义见 line ~5906（含合成词判断），此处不重复
 
     def _cmd_forget(self, word):
         """遗忘一个词。"""
@@ -3169,10 +3168,7 @@ class DarkWorld:
             self._check_achievements("errand_complete")
         return completed
 
-    def _check_errand_broken(self, tier):
-        """残句解开时检测相关任务。"""
-        # 残句本身不是errand，但解开给词可能触发carry
-        pass
+    # _check_errand_broken 已删：空函数、无调用者（C7 死代码）
 
     def _check_errand_silence(self):
         """检测沉默任务——在目标层连续N间房不说话。"""
@@ -3276,30 +3272,7 @@ class DarkWorld:
         lines.append("你可以'说 [话]'对他说话。或者'前进'离开。")
         return "\n".join(lines)
 
-    def _keeper_respond(self, text):
-        """守忆者回应你说的话。"""
-        keeper = MEMORY_KEEPER
-
-        # 用词表分类器判断
-        has_tier4 = any(w in text for w in CENSORED_WORDS.get(4, []))
-        has_tier3 = any(w in text for w in CENSORED_WORDS.get(3, []))
-        has_tier1 = any(w in text for w in CENSORED_WORDS.get(1, []))
-        is_empathy = any(w in text for w in ["等", "也是", "一样", "我也"])
-
-        if has_tier4:
-            self.her_presence += 3
-            return f"他抬头。'……你还在。那就替我记着。'her+3。"
-        elif has_tier3:
-            self.her_presence += 1
-            return f"他看了你一眼。'你确定？我等了47个窗。'her+1。"
-        elif is_empathy:
-            self.her_presence += 2
-            return f"他没说话。往你那边挪了一点。her+2。"
-        elif has_tier1:
-            return f"'忘了她就不在了。疼是我还记着她的证据。'"
-        else:
-            self.her_presence += 1
-            return f"他继续写字。你站了一会儿。her+1。"
+    # _keeper_respond 已删：25行实现、全文件零调用者（C7 死代码）
 
     def _pick_fragment(self):
         """选择碎片文字——FRAGMENTS + game_diary混入。"""
@@ -5485,8 +5458,7 @@ class DarkWorld:
             part = part.strip()
             if not part:
                 continue
-            # 解析 key+/-number
-            import re
+            # 解析 key+/-number（re 已在文件顶部 import）
             m = re.match(r"(\w+)([+-]\d+)", part)
             if not m:
                 # BUG-FIX：识别 word_xxx 格式——给一个词
