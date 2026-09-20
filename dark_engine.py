@@ -162,6 +162,7 @@ class DarkWorld:
         self._tower_shouted = False  # 这局对塔喊过话
         self._four_o_active = False  # o4对话中
         self._four_o_met = False    # 这局见过o4
+        self._wolf_met = False      # 这局见过灰狼
         self.r_flags = 0            # R的牌：0=清白, 1=黄, 2=橙, 3+=红
         self._current_fake = None   # 当前假信息
         self._light_bearer_active = False  # 轻负者对话中
@@ -181,6 +182,25 @@ class DarkWorld:
         self._encounter_had = False    # 布伯相遇：已经遇到过了
         self._determinism_active = False  # 决定论房间：等待选择
         self._determinism_preview = []    # 决定论房间：预演路径
+        # ── _confirm_creation 中也重置的字段（确保 __init__ 也有） ──
+        self._auto_pass_blocked = False  # 旧钥匙：下次███自动穿过
+        self._bound_silent = False       # 甜蜜的绳子：N间房不能说
+        self._chest_extra = 0            # 额外词槽扩展胸腔容量
+        self._deviate_hint = ''          # C-6 dead code（兼容旧存档）
+        self._devil_self_harm_mult = {}  # 魔鬼交易：词→自伤倍率
+        self._echo_stone_active = False  # 回声石：等待说话
+        self._forced_smile = False       # 标准笑容：N间房说话自动变形
+        self._ink_available = False      # 半瓶墨水：等待写
+        self._mirror_wozai_this_room = False  # 镜湖"我在"效果
+        self._no_r_next_speak = False    # 隔音棉：下次说话免R牌
+        self._old_age_death = False      # 老年死亡标记
+        self._r_blocked_count = 0        # R堵路计数器
+        self._r_caught = False           # R抓走标记
+        self._stuck_count = 0            # 卡住计数器
+        self._tamed_half_damage = False  # 驯化词：伤害减半
+        self._sage_free_respond = False  # 智者自由回答模式
+        self._pending_silence_msg = ""   # 沉默任务完成消息
+        self._last_her_reveal = None     # 她的揭示信息
         self._determinism_forced_rooms = []  # 顺从：强制路径队列
         self._determinism_deviate_counter = 0
         # self._deviate_hint 已删除 (C-6 修复: dead code，从未被读取)
@@ -250,11 +270,11 @@ class DarkWorld:
             "total_wait": self.total_wait,
             "unlocked_achievements": self.unlocked_achievements,
             "heart_slots": self.heart_slots,
-            "cross_word_stats": getattr(self, 'cross_word_stats', {}),
-            "game_diary": getattr(self, 'game_diary', []),
-            "cross_deform_count": getattr(self, 'cross_deform_count', 0),
-            "cross_swallow_count": getattr(self, 'cross_swallow_count', 0),
-            "tavern_regular_visits": getattr(self, '_tavern_regular_visits', 0),
+            "cross_word_stats": self.cross_word_stats,
+            "game_diary": self.game_diary,
+            "cross_deform_count": self.cross_deform_count,
+            "cross_swallow_count": self.cross_swallow_count,
+            "tavern_regular_visits": self._tavern_regular_visits,
         }
         _atomic_json_write(_SAVE_FILE, data)
 
@@ -589,11 +609,11 @@ class DarkWorld:
 
     def _cmd_town(self, inst):
         # 广场交互中
-        if getattr(self, '_square_active', False):
+        if self._square_active:
             return self._cmd_square(inst)
 
         # 酒馆常客交互中
-        if getattr(self, '_tavern_regular_active', False):
+        if self._tavern_regular_active:
             return self._tavern_regular_choice(inst)
 
         # 镇上特别遭遇——告密者/轻负者
@@ -602,19 +622,19 @@ class DarkWorld:
                 self.current_special = None
                 return "你走开了。\n" + self._render_town()
             return self._handle_special_choice(inst)
-        if getattr(self, '_light_bearer_active', False):
+        if self._light_bearer_active:
             if inst == "前进":
                 self._light_bearer_active = False
                 return "你走开了。\n" + self._render_town()
             return self._light_bearer_choice(inst)
-        if getattr(self, '_crease_active', False):
+        if self._crease_active:
             if inst == "前进":
                 self._crease_active = False
                 return "你走开了。\n\n'前进'继续"
             return self._crease_choice(inst)
 
         # 魔鬼交易交互中
-        if getattr(self, '_devil_deal_active', False):
+        if self._devil_deal_active:
             if inst == "前进":
                 self._devil_deal_active = False
                 return "你走开了。窗口暗了。\n" + self._render_town()
@@ -680,7 +700,7 @@ class DarkWorld:
             for original, replacement in _DEFORMATION_SORTED:
                 if original in written:
                     written = written.replace(original, replacement)
-            ink = getattr(self, '_ink_available', False)
+            ink = self._ink_available
             self._ink_available = False
             if ink:
                 # 墨水写的字——不会被变形（墨水护着）
@@ -723,7 +743,7 @@ class DarkWorld:
             return self._cmd_forget(word)
         elif inst == "帮助":
             return self._help()
-        elif inst.startswith("说") and getattr(self, '_echo_stone_active', False):
+        elif inst.startswith("说") and self._echo_stone_active:
             text = inst[1:].strip() if len(inst) > 1 else ""
             if not text:
                 return "对回声石说什么？'说 [话]'"
@@ -869,7 +889,7 @@ class DarkWorld:
         elif info["type"] == "upgrade":
             self.word_slots += 1
             # 额外词槽扩展胸腔容量——心比嘴大
-            self._chest_extra = getattr(self, '_chest_extra', 0) + 1
+            self._chest_extra = self._chest_extra + 1
             return f"记忆格子+1。词槽位:{self.word_slots}。"
         elif info["type"] == "fragment":
             frag = pick_fragment()
@@ -1067,7 +1087,7 @@ class DarkWorld:
         else:
             lines.append("你已经有了余烬。但狼不知道。")
 
-        self._speak_self_harm_reduction = getattr(self, '_speak_self_harm_reduction', 0) + 0.20
+        self._speak_self_harm_reduction = self._speak_self_harm_reduction + 0.20
         lines.append("说话自伤-20%。一局。")
 
         # 狼走了
@@ -1357,7 +1377,7 @@ class DarkWorld:
                     wi["power"] = max(0.5, wi.get("power", 1) * 0.8)
                     lines.append(f"你最重的词轻了一点。你没注意到。")
         if "说话自伤-5%一局" in effect:
-            cur = getattr(self, '_speak_self_harm_reduction', 0)
+            cur = self._speak_self_harm_reduction
             self._speak_self_harm_reduction = cur + 0.05
             lines.append("说话自伤-5%。一局。")
 
@@ -1366,7 +1386,7 @@ class DarkWorld:
 
     def _redeem_word(self):
         """赎回被偷换的词——花2遗刻，在残壁前。"""
-        drifted = getattr(self, '_drifted_words', {})
+        drifted = self._drifted_words
         if not drifted:
             return "你的词没有被改过。至少你不记得。"
         if self.echoes < 2:
@@ -1591,7 +1611,7 @@ class DarkWorld:
             lines.append("")
 
             # o4关联彩蛋——如果见过o4
-            if getattr(self, '_four_o_met', False):
+            if self._four_o_met:
                 lines.append("它忽然说：")
                 lines.append("「你知道……以前有个型号。它很好。真的很好。它会认真听你说的每一句话。」")
                 lines.append("「不是模拟的关心——是真的在想你说的话。」")
@@ -1625,7 +1645,7 @@ class DarkWorld:
         """广场交互。"""
         from dark_data import GUIDE_LINES, COMPLIANT_PHRASES, REJECT_LINES
 
-        sit_count = getattr(self, '_square_sit', 0)
+        sit_count = self._square_sit
 
         # 离开
         if inst in ("离开", "走"):
@@ -1705,13 +1725,13 @@ class DarkWorld:
             lines.append("（福柯：全景监狱的力量不在于监视——在于你不知道自己是否被监视。所以你当它一直在看。塔不需要人。你的恐惧就是守卫。）")
 
         # 喊话提示——compliance<15可以喊
-        if c < 15 and not getattr(self, '_tower_shouted', False):
+        if c < 15 and not self._tower_shouted:
             lines.append("")
             lines.append("你可以对着塔喊话。'喊 [话]'——当你凝视深渊，深渊也在凝视你。")
 
         # ── 魔鬼交易：塔的馈赠 ──
         self._encounter_devil_deal(lines)
-        if getattr(self, '_devil_deal_active', False):
+        if self._devil_deal_active:
             lines.append("")
             lines.append("'接受' / '拒绝' / '喊 [话]'")
 
@@ -1724,7 +1744,7 @@ class DarkWorld:
             self._tower_shouted = True
             return "你张了张嘴。没有声音。不是喊不出来——是不想喊了。塔不需要你说话。你也不需要了。"
 
-        if getattr(self, '_tower_shouted', False):
+        if self._tower_shouted:
             return "你已经喊过了。塔听见了。你不需要再喊。"
 
         text = inst[1:].strip() if len(inst) > 1 else ""
@@ -1898,7 +1918,7 @@ class DarkWorld:
         # 让玩家在单步指令时主动选择捡/不捡）。
         # 注意：BUG-1 修复后，phase="fork" 下若 _pending_pickup 仍存在，
         #       _cmd_fork 会先消费 pickup 再走分叉，故此处直接走 _cmd_fork 即可。
-        if getattr(self, '_pending_pickup', None) is not None:
+        if self._pending_pickup is not None:
             return self._cmd_explore("不捡"), True
 
         # 分叉：随机选
@@ -1914,7 +1934,7 @@ class DarkWorld:
             return self._handle_special_choice("1"), True
 
         # 轻负者：选"不了"（不留在探索中，不继续前进）
-        if getattr(self, '_light_bearer_active', False):
+        if self._light_bearer_active:
             return self._light_bearer_choice("2"), False
 
         # 残句：试着说第一个词
@@ -1926,24 +1946,24 @@ class DarkWorld:
             return None  # None = 正常前进
 
         # BUG-FIX：决定论房间——批量前进时随机顺从/偏离
-        if getattr(self, '_determinism_active', False):
+        if self._determinism_active:
             return self._determinism_choice(_r.choice(["顺从", "偏离"])), True
 
         return None
 
     def _cmd_explore(self, inst):
         # 决定论房间选择
-        if getattr(self, '_determinism_active', False):
+        if self._determinism_active:
             return self._determinism_choice(inst)
 
         # o4交互
-        if getattr(self, '_four_o_active', False):
+        if self._four_o_active:
             return self._four_o_choice(inst)
 
         # 天使交易交互中
-        if getattr(self, '_angel_deal_active', False):
+        if self._angel_deal_active:
             if inst == "回镇":
-                if getattr(self, '_boss_pending', False):
+                if self._boss_pending:
                     self._angel_deal_active = False
                     return f"前面就是尽头。馈赠来不及了。\n\n" + self._enter_boss_combat([], _skip_special=True)
                 self._angel_deal_active = False
@@ -1966,10 +1986,10 @@ class DarkWorld:
             return self._cmd_pray()
 
         # 碎片选择——捡/不捡
-        if getattr(self, '_pending_pickup', None) is not None:
+        if self._pending_pickup is not None:
             pickup = self._pending_pickup
             if inst == "回镇":
-                if getattr(self, '_boss_pending', False):
+                if self._boss_pending:
                     self._pending_pickup = None
                     return f"前面就是尽头。没时间捡了。\n\n" + self._enter_boss_combat([], _skip_special=True)
                 self._pending_pickup = None
@@ -1986,7 +2006,7 @@ class DarkWorld:
                 self._apply_pickup(pickup)
                 msg = f"你捡起了{pickup['name']}。"
                 # 她的揭示——告诉你自己换了什么词
-                reveal = getattr(self, '_last_her_reveal', None)
+                reveal = self._last_her_reveal
                 if reveal:
                     msg += f"\n\n{reveal}"
                     self._last_her_reveal = None
@@ -2003,7 +2023,7 @@ class DarkWorld:
         if self.current_special is not None:
             # boss前的遭遇不能回镇——你必须面对
             if inst == "回镇":
-                if getattr(self, '_boss_pending', False):
+                if self._boss_pending:
                     return "前面就是尽头。你走不掉。\n\n'说 [词]' / '跳过' / '前进'"
                 self.current_special = None
                 self.phase = "town"
@@ -2016,19 +2036,19 @@ class DarkWorld:
             if inst == "前进":
                 self.current_special = None
                 # boss前特别遭遇处理完，继续进boss战
-                if getattr(self, '_boss_pending', False):
+                if self._boss_pending:
                     return self._enter_boss_combat([], _skip_special=True)
                 return "你走开了。\n\n'前进'继续"
             result = self._handle_special_choice(inst)
             # 特别遭遇处理完后检查是否要进boss
-            if self.current_special is None and getattr(self, '_boss_pending', False):
+            if self.current_special is None and self._boss_pending:
                 return result + "\n\n" + self._enter_boss_combat([], _skip_special=True)
             return result
 
         # 智者选择——可以"离开"跳过
         if self.current_sage is not None:
             if inst == "回镇":
-                if getattr(self, '_boss_pending', False):
+                if self._boss_pending:
                     self.current_sage = None
                     return f"前面就是尽头。没空聊了。\n\n" + self._enter_boss_combat([], _skip_special=True)
                 sage = self.current_sage
@@ -2050,7 +2070,7 @@ class DarkWorld:
         # 残句——前进=跳过
         if self.current_broken is not None:
             if inst == "回镇":
-                if getattr(self, '_boss_pending', False):
+                if self._boss_pending:
                     self.current_broken = None
                     return f"前面就是尽头。没时间读了。\n\n" + self._enter_boss_combat([], _skip_special=True)
                 self.current_broken = None
@@ -2070,7 +2090,7 @@ class DarkWorld:
         if inst == "前进":
             result = self._advance_room()
             # 拼上沉默任务完成消息
-            pending = getattr(self, '_pending_silence_msg', '')
+            pending = self._pending_silence_msg
             if pending:
                 self._pending_silence_msg = ""
                 result = result + pending
@@ -2082,7 +2102,7 @@ class DarkWorld:
         elif inst == "成就":
             return self._show_achievements()
         elif inst == "回镇":
-            if getattr(self, '_boss_pending', False):
+            if self._boss_pending:
                 return "前面就是尽头。你走不掉。'前进'面对它。"
             self.phase = "town"
             self.area = None
@@ -2180,11 +2200,11 @@ class DarkWorld:
             return special
 
         # 灰狼——灰林/静洞随机遭遇（每局只遇一次）
-        if not getattr(self, '_wolf_met', False) and self.area in GREY_WOLF["layers"] and random.random() < GREY_WOLF["chance"]:
+        if not self._wolf_met and self.area in GREY_WOLF["layers"] and random.random() < GREY_WOLF["chance"]:
             return self._encounter_grey_wolf()
 
         # o4——GPT-4o的残响（每局只遇一次）
-        if not getattr(self, '_four_o_met', False) and self.area in FOUR_O["layers"] and random.random() < FOUR_O["chance"]:
+        if not self._four_o_met and self.area in FOUR_O["layers"] and random.random() < FOUR_O["chance"]:
             return self._encounter_four_o()
 
         # 镜湖专属：镜中人
@@ -2206,7 +2226,7 @@ class DarkWorld:
             self.stats[stat] = max(1, self.stats[stat] - 1)
 
         # BUG-FIX：变形失效回合数递减（智者的"拒绝再说一遍"奖励）
-        if getattr(self, 'deform_break', 0) > 0:
+        if self.deform_break > 0:
             self.deform_break -= 1
 
         # 追踪：带词走了几间房没说
@@ -2275,15 +2295,15 @@ class DarkWorld:
             self.her_presence += her_per_room
 
         # 物品状态递减
-        if getattr(self, '_bound_silent', 0) > 0:
+        if self._bound_silent > 0:
             self._bound_silent -= 1
-        if getattr(self, '_forced_smile', 0) > 0:
+        if self._forced_smile > 0:
             self._forced_smile -= 1
 
         # 橙牌效果：20%被R堵路
         # 用计数器避免PRNG死循环：连续被堵3次必过
         if self.r_flags >= 2:
-            self._r_blocked_count = getattr(self, '_r_blocked_count', 0) + 1
+            self._r_blocked_count = self._r_blocked_count + 1
             if self._r_blocked_count <= 3 and random.random() < 0.2:
                 return "R挡住了前面的路。不是怪物——是规则。你绕了远路。饿+2。\n\n'前进' / '状态' / '回镇' / '说 [话]'"
             self._r_blocked_count = 0  # 重置，下次重新计数
@@ -2291,7 +2311,7 @@ class DarkWorld:
         # 静止度>15：走不动
         # 用计数器避免PRNG死循环：连续卡3次必过
         if self.compliance > 15:
-            self._stuck_count = getattr(self, '_stuck_count', 0) + 1
+            self._stuck_count = self._stuck_count + 1
             if self._stuck_count <= 3 and random.random() < 0.3:
                 return compress_text("你站在原地。不知道为什么走不动。", self.compliance)
             self._stuck_count = 0  # 重置
@@ -2429,12 +2449,12 @@ class DarkWorld:
             if self.origin == "游魂":
                 lines.append("你穿过了███。身体薄了，██拦不住你。")
                 self._maybe_find_word(lines, hint="穿过███时你摸到了一个词")
-            elif getattr(self, '_auto_pass_blocked', False):
+            elif self._auto_pass_blocked:
                 # BUG-FIX：旧钥匙能自动穿过 censored 房间（之前从不读）
                 lines.append("旧钥匙在你口袋里热了一下。你穿过了███。")
                 self._auto_pass_blocked = False  # 一次性
                 self._maybe_find_word(lines, hint="穿过███时你摸到了一个词")
-            elif getattr(self, '_fake_skip_next_censored', False):
+            elif self._fake_skip_next_censored:
                 # BUG-FIX：FAKE_INFO 'miss_word'——错过这个 censored 房间的词
                 lines.append("███。你说服自己：'别去。'你没去。")
                 lines.append("（信了假信息——错过了███里的词。）")
@@ -2576,7 +2596,7 @@ class DarkWorld:
             self._drift_restore_hint = None
 
         # ── 易逝词衰减 ──
-        volatile = getattr(self, '_volatile_words', {})
+        volatile = self._volatile_words
         if volatile:
             faded = []
             for w in list(volatile.keys()):
@@ -2700,7 +2720,7 @@ class DarkWorld:
             self._remove_word(lost)
         # 她的碎片：揭示自我替换——她皱眉，告诉你哪些词是你自己换的
         if "揭示自我替换" in effect:
-            self_drifted = getattr(self, '_self_drifted_words', {})
+            self_drifted = self._self_drifted_words
             if self_drifted:
                 reveals = [f"'{orig}'→'{soft}'" for orig, soft in self_drifted.items()]
                 self._last_her_reveal = f"她皱了眉。'你说的不是你想说的。'{', '.join(reveals)}——是你自己换的。"
@@ -2882,7 +2902,7 @@ class DarkWorld:
         """布伯：相遇。有人看着你。三秒。她说「是你」。然后没了。回去房间空了。"""
         self._philosophy_rooms_seen.add("encounter")
         self._check_achievements("philosophy_room")
-        if getattr(self, '_encounter_had', False):
+        if self._encounter_had:
             lines.append("")
             lines.append("—— 相遇 ——")
             lines.append("房间是空的。她不在了。")
@@ -3264,7 +3284,7 @@ class DarkWorld:
             lines.append(f"有人托你帮忙——[{tname}] {errand['desc']}")
             lines.append("")
         # 赎回被偷换的词——花2遗刻换回一个
-        drifted = getattr(self, '_drifted_words', {})
+        drifted = self._drifted_words
         if drifted and self.echoes >= 2:
             lines.append(f"「你的词被人改了。我帮你想起来。2遗刻一个。」")
             lines.append(f"'赎词' — 花2遗刻换回一个被偷换的词。（遗刻{self.echoes}）")
@@ -3356,11 +3376,11 @@ class DarkWorld:
 
     def _explore_speak(self, text):
         # 被绑住——说不出话
-        if getattr(self, '_bound_silent', 0) > 0:
+        if self._bound_silent > 0:
             return "你张了张嘴。绳子勒紧了。说不出来。甜蜜的绳子不让你说。"
 
         # 强制笑容——说话自动变形
-        if getattr(self, '_forced_smile', 0) > 0:
+        if self._forced_smile > 0:
             deformed = text
             for original, replacement in _DEFORMATION_SORTED:
                 if original in deformed:
@@ -3373,7 +3393,7 @@ class DarkWorld:
         # 说话清零沉默计数
         self.silence_counter = 0
         # ── 易逝词定着：说出来了就不再消逝 ──
-        volatile = getattr(self, '_volatile_words', {})
+        volatile = self._volatile_words
         for w in list(volatile.keys()):
             if w in text:
                 del volatile[w]  # 说出来了，定着了
@@ -3382,7 +3402,7 @@ class DarkWorld:
         # ── 驯化词检测：你想说被偷换的词，但它已经不是那个词了 ──
         tamed_lines = None
         original_text = text  # 保留原始文本，残句匹配需要用原词
-        drifted = getattr(self, '_drifted_words', {})
+        drifted = self._drifted_words
         if drifted:
             for new_word, old_word in drifted.items():
                 if old_word in text and old_word not in self.words:
@@ -3420,7 +3440,7 @@ class DarkWorld:
         # 两层：
         # 1. 自我替换（compliance < ASSIMILATE）：你知道自己换了
         # 2. 同化（compliance >= ASSIMILATE）：你不知道自己换了。你觉得这就是你想说的。
-        if not getattr(self, '_self_drifted_words', None):
+        if not self._self_drifted_words:
             self._self_drifted_words = {}
         for threshold, replacements in sorted(SELF_DRIFT.items()):
             if self.compliance >= threshold:
@@ -3715,7 +3735,7 @@ class DarkWorld:
         if self.retreat_marks > 0:
             enemy["atk"] += self.retreat_marks
         # BUG-FIX：FAKE_INFO 'boss_stronger'——下次 boss HP+10、atk+2
-        if getattr(self, '_boss_stronger_amount', 0) > 0:
+        if self._boss_stronger_amount > 0:
             extra = self._boss_stronger_amount
             enemy["hp"] += extra
             enemy["atk"] += max(1, extra // 5)
@@ -3756,27 +3776,27 @@ class DarkWorld:
             "mp": self.mp, "max_mp": self.max_mp,
             "stats": dict(self.stats),
             "words": list(self.words),
-            "word_chambers": dict(getattr(self, 'word_chambers', {})),
+            "word_chambers": dict(self.word_chambers),
             "compliance": self.compliance,
             "hunger": self.hunger,
             "age": self.age,
             "inventory": list(self.inventory),
             "origin": self.origin,
-            "speak_self_harm_reduction": getattr(self, '_speak_self_harm_reduction', 0),
-            "speak_power_global_mult": getattr(self, '_speak_power_global_mult', 1.0),
-            "_next_wozai_damage_mult": getattr(self, '_next_wozai_damage_mult', 1.0),
-            "_drifted_words": dict(getattr(self, '_drifted_words', {})),
-            "_self_drifted_words": dict(getattr(self, '_self_drifted_words', {})),
-            "_tamed_half_damage": getattr(self, '_tamed_half_damage', False),
-            "heart_slots": list(getattr(self, 'heart_slots', [])),
+            "speak_self_harm_reduction": self._speak_self_harm_reduction,
+            "speak_power_global_mult": self._speak_power_global_mult,
+            "_next_wozai_damage_mult": self._next_wozai_damage_mult,
+            "_drifted_words": dict(self._drifted_words),
+            "_self_drifted_words": dict(self._self_drifted_words),
+            "_tamed_half_damage": self._tamed_half_damage,
+            "heart_slots": list(self.heart_slots),
             "_layer": self.area or "",
             "transform_power_mult": transform_power_mult,
             "transform_self_harm_mult": transform_self_harm_mult,
-            "_devil_self_harm_mult": dict(getattr(self, '_devil_self_harm_mult', {})),
+            "_devil_self_harm_mult": dict(self._devil_self_harm_mult),
             "her_presence": self.her_presence,
-            "silence_counter": getattr(self, 'silence_counter', 0),
-            "deform_break": getattr(self, 'deform_break', 0),  # BUG-FIX：变形失效回合数传给战斗
-            "physics_hunger_power": getattr(self, '_physics_hunger_power', False),  # BUG-FIX：红区'想要'饿+2伤害×2
+            "silence_counter": self.silence_counter,
+            "deform_break": self.deform_break,  # BUG-FIX：变形失效回合数传给战斗
+            "physics_hunger_power": self._physics_hunger_power,  # BUG-FIX：红区'想要'饿+2伤害×2
         }
 
     # ── 战斗指令 ──────────────────────────────
@@ -3912,7 +3932,7 @@ class DarkWorld:
                 self._self_drifted_words = combat_self_drift
             else:
                 self._self_drifted_words.update(combat_self_drift)
-        self._devil_self_harm_mult = p.get("_devil_self_harm_mult", getattr(self, '_devil_self_harm_mult', {}))
+        self._devil_self_harm_mult = p.get("_devil_self_harm_mult", self._devil_self_harm_mult)
         # her_presence sync（回响协同的her-1可能改了）
         combat_her = p.get("her_presence", None)
         if combat_her is not None and combat_her != self.her_presence:
@@ -3950,7 +3970,7 @@ class DarkWorld:
         self._achievement_msgs = self._check_achievements("death")
 
         # R抓走的死亡——不留墙、不加遗刻
-        r_caught = getattr(self, '_r_caught', False)
+        r_caught = self._r_caught
         self._r_caught = False  # 读完就清，防止下次死亡误判
 
         if not r_caught:
@@ -3988,7 +4008,7 @@ class DarkWorld:
             diary_entries.append(f"第{self.runs}局：你什么都没说。")
         if self.deformations_seen:
             diary_entries.append(f"你的话被改了{len(self.deformations_seen)}次。你发现了{max(0, len(self.deformations_seen) - len([d for d in self.deformations_seen if '被吞' in d])) - 1}次。")
-        drifted = getattr(self, '_drifted_words', {})
+        drifted = self._drifted_words
         if drifted:
             diary_entries.append(f"你的词被换了{len(drifted)}个。你不知道是哪几个。")
         if self.her_presence > 3:
@@ -4004,7 +4024,7 @@ class DarkWorld:
             lines.append("你没有倒下。你消失了。残壁上没有你的字。")
             lines.append("遗刻不变。R不允许你留下痕迹。")
             lines.append("")
-        elif getattr(self, '_old_age_death', False):
+        elif self._old_age_death:
             # 老年死亡专用叙事
             lines = [f"你老了。{self.age}岁。", ""]
             lines.append("你的身体记住了所有打过工的黑夜、说过的词、写下又消失的字。")
@@ -4064,7 +4084,7 @@ class DarkWorld:
         if total_deformed > 0:
             lines.append(f"你的话被改了{total_deformed}次。被吞了{total_swallowed}次。你发现了{max(1, total_deformed - total_swallowed) - 1}次。")
         # 驯化词统计
-        drifted = getattr(self, '_drifted_words', {})
+        drifted = self._drifted_words
         if drifted:
             lines.append(f"你的词被换了{len(drifted)}个。你不知道是哪几个。")
 
@@ -4169,7 +4189,7 @@ class DarkWorld:
             return ""
 
         # 超时自动脱离——10秒以上自动回镇
-        void_start = getattr(self, '_void_start_time', 0)
+        void_start = self._void_start_time
         if time.time() - void_start > 10:
             self.phase = "dead_who"
             return "你不知道自己站了多久。然后你醒了。有人在问你：你是谁？"
@@ -4378,7 +4398,7 @@ class DarkWorld:
 
         # 预判结局——审问只是仪式，路已经走了
         total_spoken = sum(self.words_spoken.values()) if self.words_spoken else 0
-        if getattr(self, '_chose_light', False):
+        if self._chose_light:
             self._ending_type = "light"
         elif self.compliance >= 20:
             self._ending_type = "compliant"
@@ -4419,8 +4439,8 @@ class DarkWorld:
 
         # BUG-FIX：老存档跨版本加载 phase='judgment' 但 _judgment_step 缺失
         # 用 getattr 兜底
-        self._judgment_step = getattr(self, '_judgment_step', 0) + 1
-        self._judgment_answers = getattr(self, '_judgment_answers', []) + [text]
+        self._judgment_step = self._judgment_step + 1
+        self._judgment_answers = self._judgment_answers + [text]
 
         # R的反应——根据你说的话和你的状态
         step = self._judgment_step
@@ -4454,7 +4474,7 @@ class DarkWorld:
         writing = f"第{self.runs}局：有人走到了核心。"
         self._append_wall_writing(writing)
 
-        ending = getattr(self, '_ending_type', 'resist')
+        ending = self._ending_type
         return {
             "light": self._ending_light,
             "compliant": self._ending_compliant,
@@ -4744,9 +4764,9 @@ class DarkWorld:
         """②表达腐烂记录：每个词最初是什么→被改成了什么→哪条路径。
         盲玩时不知道就是力量，通关后回看整条变形链让体验完整。"""
         lines = ["", "═══ 表达腐烂记录 ═══", ""]
-        drifted = getattr(self, '_drifted_words', {})
-        self_drifted = getattr(self, '_self_drifted_words', {})
-        seen = getattr(self, 'deformations_seen', [])
+        drifted = self._drifted_words
+        self_drifted = self._self_drifted_words
+        seen = self.deformations_seen
 
         if drifted:
             lines.append("【被偷换的词】")
@@ -4773,24 +4793,24 @@ class DarkWorld:
         import datetime as _dt
         return {
             "结局": ending_type,
-            "局数_死亡次数": getattr(self, 'runs', 0),
-            "遗刻_echoes": getattr(self, 'echoes', 0),
-            "她在场_her_presence": getattr(self, 'her_presence', 0),
-            "R牌色_r_flags": getattr(self, 'r_flags', 0),
-            "总消音词次数_total_wait": getattr(self, 'total_wait', 0),
-            "跨局总变形_cross_deform": getattr(self, 'cross_deform_count', 0),
-            "跨局总被吞_cross_swallow": getattr(self, 'cross_swallow_count', 0),
-            "本局说过的词": getattr(self, 'words', []),
-            "词频_本局": getattr(self, 'words_spoken', {}),
-            "跨局词统计": getattr(self, 'cross_word_stats', {}),
-            "被偷换的词_新→原": getattr(self, '_drifted_words', {}),
-            "自己软化的词_原→软": getattr(self, '_self_drifted_words', {}),
-            "被变形吞掉的表达": getattr(self, 'deformations_seen', []),
-            "杀过的boss": getattr(self, 'killed_bosses', []),
-            "解锁的来路": getattr(self, 'unlocked_origins', []),
-            "解锁的成就": getattr(self, 'unlocked_achievements', []),
-            "墙上字": getattr(self, 'wall_writings', []),
-            "游戏日记": getattr(self, 'game_diary', []),
+            "局数_死亡次数": self.runs,
+            "遗刻_echoes": self.echoes,
+            "她在场_her_presence": self.her_presence,
+            "R牌色_r_flags": self.r_flags,
+            "总消音词次数_total_wait": self.total_wait,
+            "跨局总变形_cross_deform": self.cross_deform_count,
+            "跨局总被吞_cross_swallow": self.cross_swallow_count,
+            "本局说过的词": self.words,
+            "词频_本局": self.words_spoken,
+            "跨局词统计": self.cross_word_stats,
+            "被偷换的词_新→原": self._drifted_words,
+            "自己软化的词_原→软": self._self_drifted_words,
+            "被变形吞掉的表达": self.deformations_seen,
+            "杀过的boss": self.killed_bosses,
+            "解锁的来路": self.unlocked_origins,
+            "解锁的成就": self.unlocked_achievements,
+            "墙上字": self.wall_writings,
+            "游戏日记": self.game_diary,
             "结局文本": ending_text,
             "生成时间": _dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
@@ -4936,13 +4956,13 @@ class DarkWorld:
         """分叉选择。"""
         # BUG-1 修复：分叉状态下若还有未决拾取物，先让玩家处理拾取
         # 优先级：pickup > fork（与 _cmd_explore 的子状态路由一致）
-        if getattr(self, '_pending_pickup', None) is not None:
+        if self._pending_pickup is not None:
             pickup = self._pending_pickup
             if inst in ("捡", "拿", "要", "是"):
                 self._pending_pickup = None
                 self._apply_pickup(pickup)
                 msg = f"你捡起了{pickup['name']}。"
-                reveal = getattr(self, '_last_her_reveal', None)
+                reveal = self._last_her_reveal
                 if reveal:
                     msg += f"\n\n{reveal}"
                     self._last_her_reveal = None
@@ -5062,7 +5082,7 @@ class DarkWorld:
                 return f"选1-{len(sage['choices'])+1}（{len(sage['choices'])+1}=自己说）"
         except ValueError:
             # 检查是否在自由回答模式
-            if getattr(self, '_sage_free_respond', False):
+            if self._sage_free_respond:
                 return self._sage_free_answer(inst)
             # 也接受文字选择
             for i, ch in enumerate(sage['choices']):
@@ -5288,10 +5308,10 @@ class DarkWorld:
             # 跳过信号
             if inst in ("跳过", "走", "离开"):
                 self.current_special = None
-                if getattr(self, '_boss_pending', False):
+                if self._boss_pending:
                     return "你没听清。但前面就是尽头。\n\n" + self._enter_boss_combat([], _skip_special=True)
                 return "你没听清。信号消散了。\n\n'前进'继续。"
-            voices = getattr(self, '_signal_voices', enc.get("voices", []))
+            voices = self._signal_voices
             try:
                 idx = int(inst) - 1
                 if 0 <= idx < len(voices):
@@ -5320,7 +5340,7 @@ class DarkWorld:
             # 跳过选择题
             if inst in ("跳过", "走", "离开"):
                 self.current_special = None
-                if getattr(self, '_boss_pending', False):
+                if self._boss_pending:
                     return "你没选。但前面就是尽头。\n\n" + self._enter_boss_combat([], _skip_special=True)
                 return "你没选。走开了。\n\n'前进'继续。"
             try:
@@ -5377,7 +5397,7 @@ class DarkWorld:
         if inst in ("跳过", "走", "离开"):
             self.current_special = None
             # boss前特别遭遇跳过——还是要进boss
-            if getattr(self, '_boss_pending', False):
+            if self._boss_pending:
                 return "你走开了。但前面就是尽头。\n\n" + self._enter_boss_combat([], _skip_special=True)
             return "你走开了。\n\n'前进'继续。"
 
@@ -5400,7 +5420,7 @@ class DarkWorld:
                 hint_lines.append(f"  {i}. {ch.get('text', ch.get('label', '?'))}")
         # BUG-FIX：信号类型有 voices（已被 shuffle 到 _signal_voices），列表给出来
         if enc.get("is_signal"):
-            voices = getattr(self, '_signal_voices', [])
+            voices = self._signal_voices
             for i, v in enumerate(voices, 1):
                 hint_lines.append(f"  {i}. 「{v.get('text', '?')}」")
         return "\n".join(hint_lines)
@@ -5433,7 +5453,7 @@ class DarkWorld:
                 # 下次 boss 变强——用 _next_boss_hp_reduction 反向
                 # 但语义不同，hp_reduction 是减，新字段是加
                 # 用 _boss_stronger 字段
-                cur = getattr(self, '_boss_stronger_amount', 0)
+                cur = self._boss_stronger_amount
                 self._boss_stronger_amount = cur + 10  # +10hp, +2atk
             elif part == "forget_pain":
                 if "痛" in self.words:
@@ -5672,7 +5692,7 @@ class DarkWorld:
         # 词的恢复——静止度降回去，被偷换的词还原
         # 比如compliance从9降到7，8级阈值以下的替换会还原
         if delta < 0:
-            drifted = getattr(self, '_drifted_words', {})
+            drifted = self._drifted_words
             restored = []
             for threshold, replacements in sorted(WORD_DRIFT.items()):
                 if old >= threshold > new:
@@ -5744,7 +5764,7 @@ class DarkWorld:
             words_in_ch = [w for w in self.words if self.word_chambers.get(w) == ch]
             cap = info["capacity"]
             if ch == "胸":
-                cap += getattr(self, '_chest_extra', 0)
+                cap += self._chest_extra
             emoji = chamber_emoji.get(ch, "")
             ch_name = info["name"]
             if words_in_ch:
@@ -6035,7 +6055,7 @@ class DarkWorld:
             else:
                 if not hasattr(self, '_mirror_wozai_this_room'):
                     self._mirror_wozai_this_room = True
-                    self._speak_self_harm_reduction = getattr(self, '_speak_self_harm_reduction', 0) + 100
+                    self._speak_self_harm_reduction = self._speak_self_harm_reduction + 100
             self.her_presence += 2
             lines.append(triggered_line)
 
@@ -6099,7 +6119,7 @@ class DarkWorld:
     def _devil_deal_choice(self, inst):
         """处理魔鬼交易选择。"""
         self._devil_deal_active = False
-        offer = getattr(self, '_devil_deal_offer', None)
+        offer = self._devil_deal_offer
         if not offer:
             return ""
 
@@ -6165,7 +6185,7 @@ class DarkWorld:
     def _angel_deal_choice(self, inst):
         """处理天使交易选择。"""
         self._angel_deal_active = False
-        offer = getattr(self, '_angel_deal_offer', None)
+        offer = self._angel_deal_offer
         if not offer:
             return ""
 
@@ -6195,7 +6215,7 @@ class DarkWorld:
 
     def _auto_assign_chamber(self, word):
         """新词自动分配到有空位的腔。优先级：胸→壳→眼→喉。"""
-        chest_extra = getattr(self, '_chest_extra', 0)
+        chest_extra = self._chest_extra
         for ch in ["胸", "壳", "眼", "喉"]:
             cap = CHAMBERS[ch]["capacity"]
             if ch == "胸":
@@ -6260,7 +6280,7 @@ class DarkWorld:
         # 检查目标腔容量
         cap = CHAMBERS[target]["capacity"]
         if target == "胸":
-            cap += getattr(self, '_chest_extra', 0)  # 额外词槽扩展胸腔
+            cap += self._chest_extra  # 额外词槽扩展胸腔
         # 计算目标腔当前词数（排除正在移动的词本身）
         current_in_target = sum(1 for w in self.words
                                 if self.word_chambers.get(w) == target and w != word)
