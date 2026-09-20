@@ -357,7 +357,7 @@ class CombatState:
             # 精妙绕路：恰好1层框架词+消音词=绕过审核的缝隙
             if framework_count == 1:
                 total_power *= 1.2  # 一层绕路反而更准——找到了缝
-                self._log(f"你绕了一层。找到了缝隙。伤害反而更准。")
+                self._log("你绕了一层。找到了缝隙。伤害反而更准。")
                 # 精妙绕路概率迷惑敌人
                 if random.random() < 0.4:
                     e["def"] = max(0, e.get("def", 0) - 2)
