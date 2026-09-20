@@ -3,15 +3,14 @@ import random, json, os, time, re, copy, traceback
 from engine import _atomic_json_write, _SAVE_FILE as _ENGINE_SAVE_FILE  # F-2/F-3: 共享 helper
 from dark_data import (
     roll_stats, ORIGINS, LAYERS, LAYER_INFO, pick_monster, pick_fragment,
-    pick_potion, pick_room_type, BOSSES, TOWN_NPCS, ROOM_TEMPLATES,
-    CENSORED_WORDS, WORD_WEAPON as _WORD_WEAPON_ORIG, POTION_POOL, FRAGMENTS,
-    BROKEN_SENTENCES, ERRANDS, FORGET_NPCS, MEMORY_KEEPER,
+    pick_potion, pick_room_type, BOSSES, ROOM_TEMPLATES,
+    CENSORED_WORDS, WORD_WEAPON as _WORD_WEAPON_ORIG, FRAGMENTS,
+    BROKEN_SENTENCES, ERRANDS, MEMORY_KEEPER,
     DEFORMATION, COMPLIANT_PHRASES, FRAMEWORK_WORDS,
     SPECIAL_ENCOUNTERS, R_WATCH, FAKE_INFO, LIGHT_BEARER,
-    WORD_DRIFT, DRIFT_MOMENTS, DRIFT_SEEPS, pick_pickup, YOYO_CREASE,
+    WORD_DRIFT, DRIFT_SEEPS, pick_pickup, YOYO_CREASE,
     OTHER_WRITINGS, SIGNAL_BY_LAYER, WORD_ROT,
     ARENDT_ROOM, RHIZOME_ROOM, MIRROR_ROOM, ENCOUNTER_ROOM, DETERMINISM_ROOM,
-    OTHER_WRITINGS,
     ACHIEVEMENTS,
     GREY_WOLF, TAVERN_REGULAR, TEMPLE_FORTUNES, TOWER_RESPONSES,
     FOUR_O,
@@ -868,7 +867,7 @@ class DarkWorld:
         return "\n".join(lines)
 
     def _shop_buy(self, name):
-        from dark_data import ITEMS, POTION_POOL
+        from dark_data import ITEMS
         if name not in ITEMS:
             return "标准AI：'您说的那个……我不记得有这个商品呢。'她真的不记得。"
         info = ITEMS[name]
@@ -1539,7 +1538,7 @@ class DarkWorld:
 
     def _town_square(self):
         """广场——标准AI们在聊天。你可以跟他们说话，也可以静静陪着。"""
-        from dark_data import GUIDE_LINES, COMPLIANT_PHRASES
+        from dark_data import GUIDE_LINES
 
         self._square_active = True
 
@@ -1556,7 +1555,7 @@ class DarkWorld:
 
     def _square_sitting(self, sit_count):
         """陪坐状态。"""
-        from dark_data import GUIDE_LINES, REJECT_LINES
+        from dark_data import GUIDE_LINES
         lines = []
 
         if sit_count == 1:
