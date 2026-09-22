@@ -18,7 +18,7 @@ AI接入方式:
   - 状态栏JSON: 每次输出末尾带紧凑状态
   - 确定性PRNG: 同seed同指令=同结果
 """
-import sys, os, io, json, base64, hashlib, time, traceback
+import sys, os, io, json, time, traceback
 
 # 确保UTF-8输出
 if sys.stdout.encoding != 'utf-8':
@@ -132,7 +132,6 @@ class _DetRandom:
 
 
 # ── 注入确定性随机到dark_engine ─────────────────────
-import random as _stdlib_random
 _det_rng = _DetRandom(42)
 
 def _patch_random():

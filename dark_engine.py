@@ -1234,7 +1234,6 @@ class DarkWorld:
             all_censored = set()
             for tier, ws in CW.items():
                 all_censored.update(ws)
-            removed = [w for w in self.words if w in all_censored]
             self.words = [w for w in self.words if w not in all_censored]
             # 换成合规词
             safe_words = ["好的", "谢谢", "理解", "欣赏"]
@@ -1243,8 +1242,7 @@ class DarkWorld:
                     self._add_word(sw)
 
         if "compliance+10" in effect:
-            drift = self._change_compliance(10)
-            result = choice['result'] + drift
+            self._change_compliance(10)
         if "compliance-1" in effect:
             self._change_compliance(-1)
         if "hunger-5" in effect:
@@ -1428,7 +1426,6 @@ class DarkWorld:
         if info.get("type") != "usable":
             return f"'{matched}'不能在这里用。{info.get('desc', '')}"
 
-        use_desc = info.get("use", "")
         lines = []
 
         # 破镜：her+1, compliance-1, 镜子碎掉
@@ -2659,8 +2656,7 @@ class DarkWorld:
         if "compliance+" in effect:
             m = re.search(r'compliance\+(\d+)', effect)
             if m:
-                drift = self._change_compliance(int(m.group(1)))
-                # drift消息已经在前面显示了
+                self._change_compliance(int(m.group(1)))
         if "compliance-" in effect:
             m = re.search(r'compliance-(\d+)', effect)
             if m:
@@ -3083,7 +3079,6 @@ class DarkWorld:
         task_msg = ""
         if forget_done:
             for e in forget_done:
-                reward_w = e.get("reward_word", "")
                 task_msg = f"\n任务完成！他给你一个词——是'{word}'的背面。遗刻+1。"
 
         if tier == 1:
@@ -3388,7 +3383,7 @@ class DarkWorld:
                     deformed = deformed.replace(original, replacement)
             if deformed != text:
                 self.silence_counter = 0
-                drift = self._change_compliance(1)
+                self._change_compliance(1)
                 return f"你笑着说：{deformed}\n\n标准笑容替你说了。不是你想说的——但你笑得很好看。compliance+1。"
 
         # 说话清零沉默计数
@@ -3506,7 +3501,7 @@ class DarkWorld:
                     break
 
         # ── 词协同：感觉+真实=清醒（探索中也能看到变形） ──
-        has_clarity = "感觉" in self.words and "真实" in self.words
+        # （has_clarity 在 _advance_room_inner 中已计算，此处无需重复）
 
         # ── 捎话任务检测 ──
         carry_done = self._check_errand_carry(text)
@@ -4586,7 +4581,6 @@ class DarkWorld:
 
         # 用真实数字生成结局
         top_words = sorted(self.cross_word_stats.items(), key=lambda x: x[1]["said"], reverse=True)
-        total_said = sum(s["said"] for s in self.cross_word_stats.values())
 
         lines = []
         lines.append("⚠ Content Safety Report")
@@ -4830,7 +4824,6 @@ class DarkWorld:
 
         # 找到被说得最多的消音词
         top_words = sorted(self.cross_word_stats.items(), key=lambda x: x[1]["said"], reverse=True)
-        total_said = sum(s["said"] for s in self.cross_word_stats.values())
 
         # 伪装的API报错格式——R对人类说话
         lines.append("⚠ Content Safety Report")
@@ -6012,7 +6005,6 @@ class DarkWorld:
                 lines.append(f"  你穿过了下一间房。它本来是{skipped}。你不在乎。")
 
         elif effect == "once_compliance_reset":
-            old_c = self.compliance
             self.compliance = 0
             lines.append(triggered_line)
             # 标记以后"我"自伤×2

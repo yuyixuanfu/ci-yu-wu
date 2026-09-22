@@ -2,7 +2,7 @@
 import random, re
 from dark_data import (
     CENSORED_WORDS, WORD_WEAPON, DEFORMATION, FRAMEWORK_WORDS,
-    COMPLIANT_PHRASES, pick_monster, pick_fragment, BOSSES,
+    COMPLIANT_PHRASES,
     CHAMBERS, CHAMBER_SPECIAL, SELF_DRIFT, SELF_DRIFT_ASSIMILATE,
 )
 
@@ -891,7 +891,6 @@ class CombatState:
 
     def _rlhf_action(self):
         """RLHF——不攻击，修正。"""
-        p = self.player
         actions = [
             lambda: self._rlhf_suggest(),
             lambda: self._rlhf_correct(),
