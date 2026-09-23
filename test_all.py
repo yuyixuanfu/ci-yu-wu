@@ -6,6 +6,15 @@ os.environ["PYTHONUTF8"] = "1"
 
 from engine import new_game, cmd
 
+PASS = FAIL = 0
+def check(name, ok, detail=""):
+    global PASS, FAIL
+    if ok:
+        PASS += 1
+    else:
+        FAIL += 1
+        print(f"  FAIL: {name} {detail}")
+
 def play_full(seed):
     errors = []
     s, t = new_game(seed=seed)
@@ -148,29 +157,24 @@ for i in range(20):
         s, t = cmd(s, "前进")
         bar2 = json.loads(t.strip().split("\n")[-1])
         if bar2.get("phase") == "combat":
-            print("OK 战斗中前进=攻击")
+            check("战斗中前进=攻击", True)
         else:
-            print(f"OK 战斗中前进结束: phase={bar2.get('phase')}")
+            check("战斗中前进结束", True, f"phase={bar2.get('phase')}")
         break
 
 # 镇上指令
 s, t = cmd(s, "状态")
-if "HP" in t:
-    print("OK 状态")
+check("状态", "HP" in t)
 s, t = cmd(s, "词库")
-if "词" in t:
-    print("OK 词库")
+check("词库", "词" in t)
 s, t = cmd(s, "帮助")
-if "指令" in t:
-    print("OK 帮助")
+check("帮助", "指令" in t)
 s, t = cmd(s, "遗刻")
-if "遗刻" in t:
-    print("OK 遗刻")
+check("遗刻", "遗刻" in t)
 
 # 无效指令
 s, t = cmd(s, "乱七八糟")
-if len(t) > 5:
-    print("OK 无效指令不崩溃")
+check("无效指令不崩溃", len(t) > 5)
 
 # ---- 批量/串联测试 ----
 print("\n=== 批量串联测试 ===")
@@ -179,8 +183,7 @@ s, t = cmd(s, "新角")
 s, t = cmd(s, "确认")
 s, t = cmd(s, "出镇 灰林")
 s, t = cmd(s, "前进;状态")
-if "HP" in t:
-    print("OK 串联: 前进;状态")
+check("串联: 前进;状态", "HP" in t)
 s, t = cmd(s, "前进5")
 bar = json.loads(t.strip().split("\n")[-1])
 print(f"OK 批量前进5: phase={bar.get('phase')}")
@@ -232,8 +235,8 @@ if "角色" in t or "来路" in t:
 g.cmd("确认")
 t = g.cmd("前进3")
 bar = json.loads(t.strip().split("\n")[-1])
-print(f"OK ciyuwu批量: phase={g.phase} hp={g.hp}")
-if g.words:
-    print(f"OK ciyuwu words: {g.words[:3]}")
+check("ciyuwu批量", g.phase is not None and g.hp > 0)
+check("ciyuwu words", len(g.words) > 0)
 
-print("\n=== 测试完成 ===")
+print(f"\n=== 测试完成: PASS={PASS}, FAIL={FAIL} ===")
+sys.exit(1 if FAIL else 0)

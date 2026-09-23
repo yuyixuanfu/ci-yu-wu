@@ -245,18 +245,32 @@ class DarkWorld:
         try:
             with open(_SAVE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            for k in ["echoes", "runs", "echo_map", "killed_bosses",
-                       "unlocked_origins", "wall_writings", "total_wait",
-                       "unlocked_achievements", "heart_slots",
-                       "cross_word_stats", "game_diary",
-                       "cross_deform_count", "cross_swallow_count"]:
-                if k in data:
-                    setattr(self, k, data[k])
-            # _tavern_regular_visits 是跨局计数器，带 _ 前缀需单独恢复
-            if "tavern_regular_visits" in data:
-                self._tavern_regular_visits = data["tavern_regular_visits"]
-        except Exception as _e:
-            import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
+        except (json.JSONDecodeError, UnicodeDecodeError) as _e:
+            # ERR-02: 损坏存档与无存档必须可区分——损坏时告警并保留备份
+            import sys
+            backup = _SAVE_FILE + ".corrupt"
+            try:
+                os.rename(_SAVE_FILE, backup)
+            except OSError:
+                pass
+            print(f"[WARN] 存档损坏已备份到 {backup}: {_e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return  # 返回空状态，但已留痕
+        except (IOError, OSError) as _e:
+            import sys
+            print(f"[WARN] 读存档失败: {_e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return
+        for k in ["echoes", "runs", "echo_map", "killed_bosses",
+                   "unlocked_origins", "wall_writings", "total_wait",
+                   "unlocked_achievements", "heart_slots",
+                   "cross_word_stats", "game_diary",
+                   "cross_deform_count", "cross_swallow_count"]:
+            if k in data:
+                setattr(self, k, data[k])
+        # _tavern_regular_visits 是跨局计数器，带 _ 前缀需单独恢复
+        if "tavern_regular_visits" in data:
+            self._tavern_regular_visits = data["tavern_regular_visits"]
 
     def _save_meta(self):
         data = {

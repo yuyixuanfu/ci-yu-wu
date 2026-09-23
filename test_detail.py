@@ -2,6 +2,15 @@ import json, sys, os
 os.environ["PYTHONUTF8"] = "1"
 from engine import new_game, cmd
 
+PASS = FAIL = 0
+def check(name, ok, detail=""):
+    global PASS, FAIL
+    if ok:
+        PASS += 1
+    else:
+        FAIL += 1
+        print(f"  FAIL: {name} {detail}")
+
 print("=== 1. 战斗中前进 vs 攻击 ===")
 s, t = new_game(seed=42)
 s, t = cmd(s, "新角"); s, t = cmd(s, "确认"); s, t = cmd(s, "出镇 灰林")
@@ -25,9 +34,9 @@ for i in range(20):
         has_enemy_atk_fwd = any("伤害" in l or "攻击" in l for l in fwd_lines)
         has_enemy_atk_atk = any("伤害" in l or "攻击" in l for l in atk_lines)
         if has_enemy_atk_atk and not has_enemy_atk_fwd:
-            print("  BUG: 前进没有敌方攻击回合!")
+            check("前进有敌方攻击回合", False, "前进没有敌方攻击回合")
         else:
-            print("  OK: 前进有敌方攻击回合")
+            check("前进有敌方攻击回合", True)
         break
 
 print("\n=== 2. 碎片选择: 捡 vs 不捡 ===")
@@ -49,11 +58,11 @@ if bar.get("sub") == "pickup":
     print(f"  捡: compliance {comp_before} -> {comp_pick}")
     print(f"  不捡: compliance {comp_before} -> {comp_nopick}")
     if comp_pick == comp_before and comp_nopick == comp_before:
-        print("  BUG: 捡了也没效果!")
+        check("捡有效果", False, "捡了也没效果")
     elif comp_nopick > comp_before:
-        print("  BUG: 不捡也涨了!")
+        check("不捡不变", False, "不捡也涨了")
     else:
-        print("  OK: 捡有效果，不捡不变")
+        check("捡有效果，不捡不变", True)
 else:
     print("  没碎片，跳过")
 
@@ -78,18 +87,19 @@ for seed in [1, 7, 42, 99, 123, 256, 500, 777]:
         if sub == "special":
             s, t = cmd(s, "跳过")
             bar2 = json.loads(t.strip().splitlines()[-1])
-            if bar2.get("phase") == "combat":
-                print(f"  seed {seed}: OK 跳过后进boss")
+            if bar2.get("phase") in ("combat", "战斗"):
+                check(f"seed {seed} 跳过后进boss", True)
                 boss_entered = True
             else:
                 # 前进可能进boss
                 s, t = cmd(s, "前进")
                 bar3 = json.loads(t.strip().splitlines()[-1])
-                if bar3.get("phase") == "combat":
-                    print(f"  seed {seed}: OK 跳过→前进进boss")
+                if bar3.get("phase") in ("combat", "战斗"):
+                    check(f"seed {seed} 跳过→前进进boss", True)
                     boss_entered = True
                 else:
-                    print(f"  seed {seed}: 跳过后phase={bar2.get('phase')} sub={bar2.get('sub','')}")
+                    # 非 boss 前的特殊遭遇，跳过后探索是正常行为
+                    check(f"seed {seed} 跳过后", bar2.get('phase') in ('combat', '战斗', 'explore', '探索'), f"phase={bar2.get('phase')}")
             break
     if not boss_entered and i >= 29:
         pass  # 没触发special，不是bug
@@ -110,9 +120,9 @@ if pickup_name == "好公民徽章":
     print(f"  compliance: {comp_before} -> {comp_after} (预期+5)")
     print(f"  words: {len(words_before)} -> {len(words_after)} (预期-1)")
     if comp_after != comp_before + 5:
-        print(f"  BUG: compliance变化不对!")
+        check("compliance变化+5", False, f"{comp_before}→{comp_after}")
     else:
-        print(f"  OK")
+        check("compliance变化+5", True)
 else:
     print(f"  碎片是{pickup_name}不是好公民徽章，跳过")
 
@@ -124,11 +134,9 @@ save_game(s)
 s2 = load_game()
 if s2 is not None:
     s2, t2 = cmd(s2, "帮助")
-    if "指令" in t2:
-        print("OK 存档读档正常")
-    else:
-        print("BUG 读档后执行失败")
+    check("存档读档正常", "指令" in t2)
 else:
-    print("BUG 存档读不到")
+    check("存档读档正常", False, "存档读不到")
 
-print("\n=== 测试完成 ===")
+print(f"\n=== 测试完成: PASS={PASS}, FAIL={FAIL} ===")
+sys.exit(1 if FAIL else 0)
