@@ -23,7 +23,7 @@ compact模式省token原理：
   4. 支持批量指令（前进5, 攻3）减少交互次数
 """
 
-import sys, os, io, json, threading, time, uuid
+import sys, os, io, json, threading, time, uuid, copy
 
 if sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -32,7 +32,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
 from flask import Flask, request, jsonify
-from engine import new_game as _new_game, cmd as _cmd, _ensure_init, _snapshot, _restore, _status_bar, _atomic_json_write, _SAVE_FILE
+from engine import new_game as _new_game, cmd as _cmd, _ensure_init, _atomic_json_write, _SAVE_FILE
 
 app = Flask(__name__)
 _lock = threading.Lock()
@@ -59,7 +59,7 @@ _META_KEYS = ["echoes", "runs", "echo_map", "killed_bosses",
               "cross_deform_count", "cross_swallow_count"]
 
 def _load_meta():
-    """从磁盘读meta进度。"""
+    """从磁盘读meta进度。读失败返回 None（调用方必须停止写回，避免丢档）。"""
     if not os.path.exists(_META_FILE):
         return {}
     try:
@@ -71,7 +71,7 @@ def _load_meta():
         # BUG-FIX：只吞 JSON/IO 错误，别吞掉所有异常（隐藏 bug）
         import sys
         print(f"[WARN] _load_meta 失败: {type(e).__name__}: {e}", file=sys.stderr)
-        return {}
+        return None
 
 def _save_meta(meta):
     """把meta进度写到磁盘（原子写 + 跨进程文件锁）。"""
@@ -79,7 +79,7 @@ def _save_meta(meta):
         # BUG-14 修复：跨进程并发下用 advisory lock 防止多副本同时写覆盖
         with _meta_lock("w"):
             _atomic_json_write(_META_FILE, meta)
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         import sys
         print(f"[WARN] _save_meta 失败: {e}", file=sys.stderr)
 
@@ -91,7 +91,7 @@ def _meta_lock(mode):
         def __enter__(self): return self
         def __exit__(self, *a): return False
     try:
-        if hasattr(os, 'O_EXCL'):  # Unix
+        if os.name == "posix":  # Unix
             import fcntl as _f
             lock_path = _META_FILE + ".lock"
             fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
@@ -104,9 +104,9 @@ def _meta_lock(mode):
                 def __enter__(self): return self
                 def __exit__(self, *a):
                     try: _f.flock(fd, _f.LOCK_UN)
-                    except: pass
+                    except OSError: pass
                     try: os.close(fd)
-                    except: pass
+                    except OSError: pass
                     return False
             return _UnixLock()
         elif os.name == 'nt':  # Windows
@@ -129,9 +129,9 @@ def _meta_lock(mode):
                             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
                         else:
                             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                    except: pass
+                    except OSError: pass
                     try: os.close(fd)
-                    except: pass
+                    except OSError: pass
                     return False
             return _WinLock()
     except Exception:
@@ -144,7 +144,7 @@ def _extract_meta(state):
 
 def _merge_meta(disk_meta, session_meta):
     """合并两个meta dict——列表去重、dict按键合并、计数器取max。"""
-    result = dict(disk_meta)
+    result = copy.deepcopy(disk_meta)
     for k, v in session_meta.items():
         if v is None:
             continue
@@ -180,11 +180,12 @@ def _merge_meta(disk_meta, session_meta):
 
 
 def _inject_meta(state, meta):
-    """把meta字段注入state。"""
+    """把meta字段注入state，返回新dict（不修改入参）。"""
+    out = dict(state)
     for k in _META_KEYS:
         if k in meta:
-            state[k] = meta[k]
-    return state
+            out[k] = meta[k]
+    return out
 
 
 def _init():
@@ -353,37 +354,40 @@ def new_game():
     with _lock:
         _cleanup_sessions()
         # 合并所有session的meta再存一次（避免逐个覆盖丢数据）
-        merged_meta = _load_meta()
+        disk_meta = _load_meta()
+        meta_ok = disk_meta is not None
+        merged_meta = disk_meta if meta_ok else {}
         for sid, (s, _, _) in _sessions.items():
             session_meta = _extract_meta(s)
             merged_meta = _merge_meta(merged_meta, session_meta)
-        _save_meta(merged_meta)
+        if meta_ok:
+            _save_meta(merged_meta)
 
         state, text = _new_game(seed=seed)
         # 注入持久化的meta（echoes/killed_bosses等不因/new重置）
         if merged_meta:
             state = _inject_meta(state, merged_meta)
 
-    if compact:
-        # 服务端存状态，返回session_id
-        session_id = uuid.uuid4().hex[:16]
-        # 叙事完整保留，只去指令提示
-        compact_output = _compact_text(text, "init")
-        # 从state直接提取摘要，不用反序列化DarkWorld
-        status, last_words = _status_from_state(state)
-        _sessions[session_id] = (state, time.time(), last_words)
-        return jsonify({
-            "session": session_id,
-            "text": compact_output,
-            "status": status,
-            "done": False,
-        })
-    else:
-        return jsonify({
-            "text": text,
-            "state": state,
-            "done": False,
-        })
+        if compact:
+            # 服务端存状态，返回session_id
+            session_id = uuid.uuid4().hex[:16]
+            # 叙事完整保留，只去指令提示
+            compact_output = _compact_text(text, "init")
+            # 从state直接提取摘要，不用反序列化DarkWorld
+            status, last_words = _status_from_state(state)
+            _sessions[session_id] = (state, time.time(), last_words)
+            return jsonify({
+                "session": session_id,
+                "text": compact_output,
+                "status": status,
+                "done": False,
+            })
+        else:
+            return jsonify({
+                "text": text,
+                "state": state,
+                "done": False,
+            })
 
 
 @app.route('/cmd', methods=['POST'])
@@ -407,7 +411,7 @@ def cmd_game():
             if session_id not in _sessions:
                 # BUG-FIX：session 过期/不存在时不静默回退到 body state
                 # 否则玩家会以为自己在用 session，实际在用旧 body state
-                return jsonify({"error": "session 已过期或不存在", "session": session_id}), 401
+                return jsonify({"error": "session 已过期或不存在", "session": session_id}), 404
             state, _, last_words = _sessions[session_id]
         elif state is None:
             return jsonify({"error": "缺少 session 或 state 字段"}), 400
@@ -416,9 +420,10 @@ def cmd_game():
 
         # 持久化meta进度——合并磁盘上的meta再写，避免多session覆盖
         disk_meta = _load_meta()
-        session_meta = _extract_meta(new_state)
-        disk_meta = _merge_meta(disk_meta, session_meta)
-        _save_meta(disk_meta)
+        if disk_meta is not None:
+            session_meta = _extract_meta(new_state)
+            disk_meta = _merge_meta(disk_meta, session_meta)
+            _save_meta(disk_meta)
 
         if compact:
             # 存回服务端
@@ -445,19 +450,9 @@ def cmd_game():
             })
 
 
-@app.route('/sessions', methods=['GET'])
-def list_sessions():
-    """调试用——看当前存了多少session。"""
-    return jsonify({
-        "count": len(_sessions),
-        "sessions": {sid: {"age": int(time.time() - t)} for sid, (_, t, _) in _sessions.items()},
-    })
-
-
 if __name__ == '__main__':
     _init()
     print("词与物 HTTP API — localhost:8877")
     print("POST /new {compact:true}  省token模式")
     print("POST /cmd {session,cmd}   执行指令")
-    print("GET  /sessions            查看session数")
-    app.run(host='0.0.0.0', port=8877, debug=False)
+    app.run(host='127.0.0.1', port=8877, debug=False)

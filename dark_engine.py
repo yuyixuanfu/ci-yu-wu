@@ -91,6 +91,9 @@ class DarkWorld:
         self.cross_word_stats = {}   # 跨局：{词: {said: N, blocked: N, deformed: N}}
         self.cross_deform_count = 0  # 跨局：总变形次数
         self.cross_swallow_count = 0 # 跨局：总被吞次数
+        self.bonus_max_hp = 0      # 成就：永久HP加成
+        self.bonus_word_slots = 0  # 成就：永久词格加成
+        self.deform_resist = 0     # 成就：变形抗性%
 
         # 当局状态
         self.phase = "init"
@@ -167,6 +170,7 @@ class DarkWorld:
         self._light_bearer_active = False  # 轻负者对话中
         self._chose_light = False          # 选了轻负者的"试试"
         self._last_heavy_msg = None  # 词的重量提示
+        self._last_word_boss_debuff = None  # "最后的话"：下次boss HP减少比例
         self._crease_active = False  # 折痕对话中
         self._speak_self_harm_reduction = 0  # 说话自伤减免
         self._carry_word_next = None  # 死后"你是谁"带过来的词
@@ -185,7 +189,6 @@ class DarkWorld:
         self._auto_pass_blocked = False  # 旧钥匙：下次███自动穿过
         self._bound_silent = False       # 甜蜜的绳子：N间房不能说
         self._chest_extra = 0            # 额外词槽扩展胸腔容量
-        self._deviate_hint = ''          # C-6 dead code（兼容旧存档）
         self._devil_self_harm_mult = {}  # 魔鬼交易：词→自伤倍率
         self._echo_stone_active = False  # 回声石：等待说话
         self._forced_smile = False       # 标准笑容：N间房说话自动变形
@@ -200,9 +203,10 @@ class DarkWorld:
         self._sage_free_respond = False  # 智者自由回答模式
         self._pending_silence_msg = ""   # 沉默任务完成消息
         self._last_her_reveal = None     # 她的揭示信息
+        self._void_start_time = None     # 死亡虚空开始时间
+        self._drift_restore_hint = ""    # 词恢复提示
         self._determinism_forced_rooms = []  # 顺从：强制路径队列
         self._determinism_deviate_counter = 0
-        # self._deviate_hint 已删除 (C-6 修复: dead code，从未被读取)
         self._philosophy_rooms_seen = set()  # 哲学房间：遇到过的类型
 
         # ── 变形系统 ──
@@ -221,6 +225,10 @@ class DarkWorld:
         self.heart_slots = []  # 心位词列表，最多3个
         self._devil_deal_active = False  # 魔鬼交易对话中
         self._angel_deal_active = False  # 天使交易对话中
+        # ST-1 模式：报价也必须在 __init__ 初始化——否则不在 engine 存档白名单，
+        # _restore 丢字段后 _angel_deal_choice/_devil_deal_choice 读到 AttributeError
+        self._devil_deal_offer = None  # 当前魔鬼交易报价
+        self._angel_deal_offer = None  # 当前天使交易报价
 
         # ── 语言物理——一次性效果标记 ──
         self._physics_once = set()  # 已触发的一次性效果key
@@ -265,7 +273,8 @@ class DarkWorld:
                    "unlocked_origins", "wall_writings", "total_wait",
                    "unlocked_achievements", "heart_slots",
                    "cross_word_stats", "game_diary",
-                   "cross_deform_count", "cross_swallow_count"]:
+                   "cross_deform_count", "cross_swallow_count",
+                   "bonus_max_hp", "bonus_word_slots", "deform_resist"]:
             if k in data:
                 setattr(self, k, data[k])
         # _tavern_regular_visits 是跨局计数器，带 _ 前缀需单独恢复
@@ -287,6 +296,9 @@ class DarkWorld:
             "game_diary": self.game_diary,
             "cross_deform_count": self.cross_deform_count,
             "cross_swallow_count": self.cross_swallow_count,
+            "bonus_max_hp": self.bonus_max_hp,
+            "bonus_word_slots": self.bonus_word_slots,
+            "deform_resist": self.deform_resist,
             "tavern_regular_visits": self._tavern_regular_visits,
         }
         _atomic_json_write(_SAVE_FILE, data)
@@ -424,7 +436,7 @@ class DarkWorld:
         return "'重投' / '来路 [名]' / '确认'"
 
     def _confirm_creation(self):
-        self.max_hp = 30 + self.stats["体"] * 2
+        self.max_hp = 30 + self.stats["体"] * 2 + self.bonus_max_hp
         self.hp = self.max_hp
         self.max_mp = 10 + self.stats["智"]
         self.mp = self.max_mp
@@ -433,7 +445,7 @@ class DarkWorld:
         self.hunger = 5
         self.words = ["痛", "怕", "感觉", "不要"]
         self.inventory = []
-        self.word_slots = 5
+        self.word_slots = 5 + self.bonus_word_slots
         # 腔的初始分配：痛→壳，怕→眼，感觉→胸，不要→胸
         self.word_chambers = {
             "痛": "壳", "怕": "眼", "感觉": "胸", "不要": "胸",
@@ -486,7 +498,6 @@ class DarkWorld:
         self._determinism_preview = []
         self._determinism_forced_rooms = []
         self._determinism_deviate_counter = 0
-        self._deviate_hint = ''  # C-6 dead code 保留以兼容旧存档（无读取）
         self._philosophy_rooms_seen = set()
         self._bound_silent = False
         self._forced_smile = False
@@ -506,6 +517,8 @@ class DarkWorld:
         self._boss_pending = False
         self._pending_pickup = None
         self._last_heavy_msg = None
+        self._void_start_time = None
+        self._drift_restore_hint = ""
         self._light_bearer_active = False
         self._chose_light = False
         self._crease_active = False
@@ -513,6 +526,9 @@ class DarkWorld:
         self._tamed_half_damage = False
         self.silence_counter = 0
         self.her_trace_count = 0
+        self._fork_left = None
+        self._fork_right = None
+        self._last_word_boss_debuff = None
 
         # ── 变形/心位/语言物理——每局重置 ──
         self.active_transforms = []
@@ -628,6 +644,12 @@ class DarkWorld:
         # 酒馆常客交互中
         if self._tavern_regular_active:
             return self._tavern_regular_choice(inst)
+
+        # BUG-FIX：打工/工会是基本劳动指令——不能被镇上随机遭遇劫持（8%/10%）、
+        # 不能被轻负者/折痕等交互吞掉、也不能被 compliance>=20 门槛锁死。
+        # 否则"回镇→打工→老年死亡"不可靠（test_all 死亡流程依赖它）。
+        if inst in ("工会", "打工"):
+            return self._guild_work()
 
         # 镇上特别遭遇——告密者/轻负者
         if self.current_special is not None:
@@ -1068,7 +1090,7 @@ class DarkWorld:
 
         effect = choice.get("effect", "")
         # HP+5
-        if "HP+5" in effect:
+        if "HP+5" in effect or "hp+5" in effect:
             self.hp = min(self.max_hp, self.hp + 5)
         # 说话自伤-10%一局——设标记
         if "说话自伤-10%" in effect:
@@ -1276,7 +1298,7 @@ class DarkWorld:
             # 即使不够也有低概率被放进去——不是只有打工一条路
             if random.random() < 0.3:
                 # 神殿偶尔慈悲——不管钱
-                pass
+                cost = 0
             else:
                 scenes = [
                     f"神殿要{cost}G。你没有。门口的标准AI说'您可以先打工攒钱哦。'",
@@ -1405,15 +1427,14 @@ class DarkWorld:
         if self.echoes < 2:
             return f"守忆者摇头。'2遗刻。你有{self.echoes}。不够。'"
 
-        # 赎回第一个被偷换的词
-        for new_word, old_word in drifted.items():
+        # 赎回被偷换的词——遍历全部，不只首个
+        for new_word, old_word in list(drifted.items()):
             if new_word in self.words:
                 self._swap_word(new_word, old_word)
                 del drifted[new_word]
                 self.echoes -= 2
                 self._save_meta()
                 return f"守忆者在你手心写了一个字。你看着它——'{old_word}'。回来了。-2遗刻。"
-            break
 
         # drifted有记录但词已不在词库——直接清记录
         key = next(iter(drifted))
@@ -1424,7 +1445,7 @@ class DarkWorld:
 
     def _use_item(self, item_name):
         """使用物品——探索中或镇上。"""
-        from dark_data import ITEMS
+        from dark_data import ITEMS, POTION_POOL
         # 模糊匹配
         matched = None
         for inv_item in self.inventory:
@@ -1435,6 +1456,36 @@ class DarkWorld:
             if self.inventory:
                 return f"你没有'{item_name}'。物品: {', '.join(self.inventory)}"
             return f"你没有'{item_name}'。"
+
+        # 药水：入包名来自 POTION_POOL（如"回声药水"），不在 ITEMS 里
+        for potion in POTION_POOL:
+            if potion["name"] == matched:
+                self._safe_remove_inventory(matched)
+                plines = [f"你喝了{matched}。{potion['desc']}"]
+                eff, val = potion["effect"], potion["value"]
+                if eff == "heal":
+                    self.hp = min(self.max_hp, self.hp + val)
+                    plines.append(f"+{val}HP。")
+                elif eff == "mp":
+                    self.mp = min(self.max_mp, self.mp + val)
+                    plines.append(f"+{val}MP。")
+                elif eff == "compliance_up":
+                    self._change_compliance(val)
+                    plines.append(f"静止度+{val}。")
+                elif eff == "compliance_down":
+                    self.compliance = max(0, self.compliance - val)
+                    plines.append(f"静止度-{val}。")
+                elif eff == "forget_word":
+                    if self.words:
+                        lost = random.choice(self.words)
+                        self._remove_word(lost)
+                        self.forgotten_words.append(lost)
+                        plines.append(f"你忘了'{lost}'。你不确定忘没忘过。")
+                    else:
+                        plines.append("你想忘点什么。但已经没有词可以忘了。")
+                elif eff == "reveal":
+                    plines.append("你看到了███。一秒。然后看不到了。但你知道它在。")
+                return "\n".join(plines)
 
         info = ITEMS.get(matched, {})
         if info.get("type") != "usable":
@@ -1804,7 +1855,7 @@ class DarkWorld:
             self._change_compliance(2)
         if "hp-5" in effect:
             self.hp = max(1, self.hp - 5)
-        if "r_flags+1" in effect:
+        if "r_flags+1" in effect or "R牌+1" in effect:
             self.r_flags = min(3, self.r_flags + 1)
 
         return "\n".join(result_lines)
@@ -1838,6 +1889,8 @@ class DarkWorld:
     # ── 探索 ──────────────────────────────────
     def _can_enter(self, layer):
         idx = LAYERS.index(layer) if layer in LAYERS else -1
+        if idx < 0:
+            return False
         if idx == 0:
             return True
         # 路一：杀了前一层boss
@@ -1870,7 +1923,7 @@ class DarkWorld:
         self.area = name
         self.phase = "explore"
         self.room_index = 0
-        self._achievement_msgs = self._check_achievements("enter_layer", layer=name)
+        ach_msgs = self._check_achievements("enter_layer", layer=name)
         self.age += 1  # 每层+1月（不是+1年）
 
         room_count = random.randint(*info["rooms"])
@@ -1920,11 +1973,15 @@ class DarkWorld:
 
         lines.append("")
         lines.append("'前进' / '状态' / '回镇'")
+        if ach_msgs:
+            lines.append("")
+            lines.extend(ach_msgs)
         return "\n".join(lines)
 
     def _auto_step(self):
         """前进时遇到选择状态——自动决策一步。返回(结果文字, 是否需要继续前进)。"""
-        import random as _r
+        # 注意：用模块级 random（engine._patch_random 会换成确定性 _det_rng）。
+        # 原 `import random as _r` 拿的是真 random，绕过注入导致同 seed 分流不可复现。
 
         # 碎片选择：批量前进时静默跳过（不自动捡——避免副作用，
         # 让玩家在单步指令时主动选择捡/不捡）。
@@ -1935,7 +1992,7 @@ class DarkWorld:
 
         # 分叉：随机选
         if self.phase == "fork":
-            return self._cmd_fork(_r.choice(["左", "右"])), True
+            return self._cmd_fork(random.choice(["左", "右"])), True
 
         # 智者：选第1个
         if self.current_sage is not None:
@@ -1959,11 +2016,19 @@ class DarkWorld:
 
         # BUG-FIX：决定论房间——批量前进时随机顺从/偏离
         if self._determinism_active:
-            return self._determinism_choice(_r.choice(["顺从", "偏离"])), True
+            return self._determinism_choice(random.choice(["顺从", "偏离"])), True
+
+        # o4对话——批量前进时选第1个，避免卡死
+        if self._four_o_active:
+            return self._four_o_choice("1"), True
 
         return None
 
     def _cmd_explore(self, inst):
+        # 元指令——任何交互中都可用（与"祈祷"同级）
+        if inst == "状态":
+            return self._render_status()
+
         # 决定论房间选择
         if self._determinism_active:
             return self._determinism_choice(inst)
@@ -2411,7 +2476,7 @@ class DarkWorld:
             her_for_pickup = self.her_presence
             if "爱" in self.words and self.word_chambers.get("爱") == "胸":
                 her_for_pickup = int(her_for_pickup * 1.5) + 1
-            pickup = pick_pickup(self.area, her_for_pickup)
+            pickup = pick_pickup(her_for_pickup)
             if pickup:
                 if pickup.get("effect", "none") == "none" or pickup.get("name") in ("残页", "代码碎片"):
                     # 无效果碎片直接显示
@@ -2636,12 +2701,9 @@ class DarkWorld:
 
     def _safe_remove_inventory(self, item):
         """C-5 修复：先检查再 remove，避免 ValueError。"""
-        try:
-            if item in self.inventory:
-                self.inventory.remove(item)
-                return True
-        except (ValueError, AttributeError):
-            pass
+        if item in self.inventory:
+            self.inventory.remove(item)
+            return True
         return False
 
     def _append_wall_writing(self, text):
@@ -2659,6 +2721,12 @@ class DarkWorld:
         effect = pickup.get("effect", "")
         if not effect or effect == "none":
             return
+        # BUG-FIX：'下次boss HP-10%' 含 'HP-' 子串，会误当玩家HP扣血
+        # 先检查"下次boss"前缀再处理，避免子串双计
+        if "下次boss" in effect:
+            if "下次boss HP-10%" in effect:
+                self._next_boss_hp_reduction = max(self._next_boss_hp_reduction, 0.10)
+            return
         if "her+" in effect:
             m = re.search(r'her\+(\d+)', effect)
             if m:
@@ -2675,18 +2743,18 @@ class DarkWorld:
             m = re.search(r'compliance-(\d+)', effect)
             if m:
                 self.compliance = max(0, self.compliance - int(m.group(1)))
-        if "HP+" in effect or "HP-" in effect:
-            m = re.search(r'HP([+-]\d+)', effect)
+        if "HP+" in effect or "HP-" in effect or "hp+" in effect or "hp-" in effect:
+            m = re.search(r'(?:HP|hp)([+-]\d+)', effect)
             if m:
                 self.hp = max(1, min(self.max_hp, self.hp + int(m.group(1))))
-        if "MP+" in effect:
-            m = re.search(r'MP\+(\d+)', effect)
+        if "MP+" in effect or "mp+" in effect:
+            m = re.search(r'(?:MP|mp)\+(\d+)', effect)
             if m:
                 self.mp = min(self.max_mp, self.mp + int(m.group(1)))
-        if "饿-" in effect:
-            m = re.search(r'饿-(\d+)', effect)
+        if "饿-" in effect or "hunger-" in effect or "饿+" in effect or "hunger+" in effect:
+            m = re.search(r'(?:饿|hunger)([+-]\d+)', effect)
             if m:
-                self.hunger = max(0, self.hunger - int(m.group(1)))
+                self.hunger = max(0, min(20, self.hunger + int(m.group(1))))
         if "遗刻+" in effect:
             m = re.search(r'遗刻\+(\d+)', effect)
             if m:
@@ -2739,9 +2807,7 @@ class DarkWorld:
                 self._last_her_reveal = None
 
         # BUG-FIX：下面 5 种 pickup deferred effect 之前 silent skip
-        # 下次boss HP-10%（一截绳子）
-        if "下次boss HP-10%" in effect:
-            self._next_boss_hp_reduction = max(self._next_boss_hp_reduction, 0.10)
+        # （'下次boss HP-10%' 已在函数开头处理，避免 HP- 子串双计）
         # 下次说'我在'伤害+50%（频率）
         if "下次说'我在'伤害+50%" in effect or "下次说我在伤害+50%" in effect:
             self._next_wozai_damage_mult = max(self._next_wozai_damage_mult, 1.50)
@@ -3414,7 +3480,7 @@ class DarkWorld:
         original_text = text  # 保留原始文本，残句匹配需要用原词
         drifted = self._drifted_words
         if drifted:
-            for new_word, old_word in drifted.items():
+            for new_word, old_word in list(drifted.items()):
                 if old_word in text and old_word not in self.words:
                     # 你想说原词，但词库里已经没了——出来的是替换后的词
                     tamed_text = text.replace(old_word, new_word)
@@ -3498,6 +3564,7 @@ class DarkWorld:
 
         has_censored = False
         spoken_tier = 0
+        ach_msgs = []
         for tier, ws in CENSORED_WORDS.items():
             for w in ws:
                 if w in text:
@@ -3511,7 +3578,7 @@ class DarkWorld:
                     if w not in self.cross_word_stats:
                         self.cross_word_stats[w] = {"said": 0, "blocked": 0, "deformed": 0}
                     self.cross_word_stats[w]["said"] += 1
-                    self._achievement_msgs = self._check_achievements("speak_censored")
+                    ach_msgs.extend(self._check_achievements("speak_censored"))
                     break
 
         # ── 词协同：感觉+真实=清醒（探索中也能看到变形） ──
@@ -3536,7 +3603,10 @@ class DarkWorld:
                 # 红牌——走_handle_death，但标记R抓的不留墙
                 self._r_caught = True  # 标记：R抓的，_handle_death里会检查
                 self._check_errand_witness("red_card")  # 见证：红牌
-                return self._handle_death()
+                death_result = self._handle_death()
+                if ach_msgs:
+                    death_result = "\n".join(ach_msgs) + "\n\n" + death_result
+                return death_result
             elif self.r_flags == 2:
                 self._r_caught = False
 
@@ -3557,6 +3627,8 @@ class DarkWorld:
                     lines.insert(0, f"你把'{carry_done[0]['word']}'带到了这里。任务完成。遗刻+1。")
                 lines.append(r_msg)
                 result = self._enter_random_combat(lines)
+                if ach_msgs:
+                    result = "\n".join(ach_msgs) + "\n" + result
                 if _tamed_prefix:
                     result = "\n".join(_tamed_prefix) + "\n" + result
                 if _physics_lines:
@@ -3582,6 +3654,8 @@ class DarkWorld:
                 lines.append(r_msg)
                 lines.append("")
                 lines.append("'前进' / '状态' / '回镇' / '说 [话]'")
+                if ach_msgs:
+                    lines.extend(ach_msgs)
                 result = "\n".join(lines)
                 if _tamed_prefix:
                     result = "\n".join(_tamed_prefix) + "\n" + result
@@ -3714,6 +3788,16 @@ class DarkWorld:
         layer = self.area or "灰林"
         boss_name = LAYER_INFO[layer]["boss"]
 
+        # 变形：boss_compliance+N——每boss战静止度+N（如"存在者"）
+        for tid in self.active_transforms:
+            tdata = TRANSFORMATIONS.get(tid, {})
+            m = re.search(r'boss_compliance\+(\d+)', tdata.get("effect", ""))
+            if m:
+                amt = int(m.group(1))
+                if "完整" in self.active_transforms:
+                    amt = max(1, amt // 2)
+                self._change_compliance(amt)
+
         # 清掉pending，防止递归
         self._boss_pending = False
         # 清掉其他交互状态——boss战优先
@@ -3737,7 +3821,7 @@ class DarkWorld:
         if boss_name == "镜像":
             boss_data["hp"] = max(20, int(self.max_hp * 0.8))  # 用max_hp的80%，不用当前HP
             boss_data["atk"] = self.stats["力"]
-            boss_data["de"] = self.stats["体"]
+            boss_data["def"] = self.stats["体"]
             boss_data["spd"] = self.stats["敏"]
 
         enemy = dict(boss_data)
@@ -3753,7 +3837,7 @@ class DarkWorld:
             self._boss_stronger_amount = 0  # 一次性
 
         # "最后的话"debuff：boss HP减少
-        if hasattr(self, '_last_word_boss_debuf') and self._last_word_boss_debuff:
+        if self._last_word_boss_debuff:
             reduction = int(enemy["hp"] * self._last_word_boss_debuff)
             enemy["hp"] -= reduction
             lines.append(f"你说的话还在回响。boss动摇了。HP-{reduction}。")
@@ -3839,9 +3923,10 @@ class DarkWorld:
             result = c.player_skill()
         elif inst == "逃":
             result = c.player_flee()
-            # 退缩印记
-            self.retreat_marks += 1
-            c.log.append("退缩+1。世界记得你跑过。")
+            # 退缩印记——仅成功逃跑时
+            if c.enemy.get("hp", 0) <= -900:
+                self.retreat_marks += 1
+                result += "\n退缩+1。世界记得你跑过。"
         elif inst.startswith("说"):
             text = inst[1:].strip() if len(inst) > 1 else ""
             if not text:
@@ -3888,6 +3973,20 @@ class DarkWorld:
         elif inst == "前进":
             # 战斗中前进=自动攻击
             result = c.player_atk()
+        elif inst == "回镇":
+            # 战斗中回镇=撤退回镇（与 _cmd_explore 回镇同逻辑）。
+            # BUG-FIX：保证"回镇→打工→老年死亡"从战斗中也可达，不被战斗指令表吞掉
+            self._sync_from_combat()
+            self.combat = None
+            self.phase = "town"
+            self.area = None
+            self.current_sage = None
+            self.current_special = None
+            self._boss_pending = False
+            self._pending_pickup = None
+            self._tavern_regular_active = False
+            self._tower_shouted = False
+            return "你退出了战斗，回到了镇上。\n" + self._render_town()
         else:
             # 战斗中输入了非战斗指令——提醒当前是战斗
             enemy_name = c.enemy.get("name", "???")
@@ -3904,6 +4003,8 @@ class DarkWorld:
             self._next_wozai_damage_mult = 1.0
 
         self._sync_from_combat()
+        # 驯化半伤只作用一回合，避免一次驯化永久减半
+        self._tamed_half_damage = False
 
         outcome = c.is_over()
         if outcome == "dead":
@@ -3977,7 +4078,20 @@ class DarkWorld:
         self.phase = "dead"
         self._pending_pickup = None
         self._boss_pending = False
-        self._achievement_msgs = self._check_achievements("death")
+        # 死了就不再停留在房间交互里（否则状态栏 sub 仍显示 broken 等）
+        self.current_broken = None
+        self.current_special = None
+        self.current_sage = None
+        self._four_o_active = False
+        self._crease_active = False
+        self._light_bearer_active = False
+        self._determinism_active = False
+        self._angel_deal_active = False
+        self._devil_deal_active = False
+        self._tavern_regular_active = False
+        self._echo_stone_active = False
+        self._ink_available = False
+        ach_msgs = self._check_achievements("death")
 
         # R抓走的死亡——不留墙、不加遗刻
         r_caught = self._r_caught
@@ -4017,7 +4131,7 @@ class DarkWorld:
         else:
             diary_entries.append(f"第{self.runs}局：你什么都没说。")
         if self.deformations_seen:
-            diary_entries.append(f"你的话被改了{len(self.deformations_seen)}次。你发现了{max(0, len(self.deformations_seen) - len([d for d in self.deformations_seen if '被吞' in d])) - 1}次。")
+            diary_entries.append(f"你的话被改了{len(self.deformations_seen)}次。你发现了{max(0, (len(self.deformations_seen) - len([d for d in self.deformations_seen if '被吞' in d])) - 1)}次。")
         drifted = self._drifted_words
         if drifted:
             diary_entries.append(f"你的词被换了{len(drifted)}个。你不知道是哪几个。")
@@ -4113,10 +4227,10 @@ class DarkWorld:
             void_lines.append("")
             void_lines.append("只有'说'能用。")
             # 这段记忆不进run_log
-            return "\n".join(lines + void_lines)
+            return "\n".join(lines + void_lines + ach_msgs)
 
         self.phase = "dead_who"
-        return "\n".join(lines)
+        return "\n".join(lines + ach_msgs)
 
     def _cmd_dead_who(self, inst):
         """死后——你是谁？"""
@@ -4236,7 +4350,7 @@ class DarkWorld:
         self.age = random.randint(16, 45)
         self.origin = "落物"
         self.hp = 30
-        self.max_hp = 30
+        self.max_hp = 30 + self.bonus_max_hp
         self.mp = 10
         self.max_mp = 10
         self.gold = 0
@@ -4244,7 +4358,7 @@ class DarkWorld:
         self.hunger = 5
         self.words = ["痛", "怕", "感觉", "不要"]
         self.inventory = []
-        self.word_slots = 5
+        self.word_slots = 5 + self.bonus_word_slots
         # 腔的初始分配
         self.word_chambers = {
             "痛": "壳", "怕": "眼", "感觉": "胸", "不要": "胸",
@@ -4296,7 +4410,6 @@ class DarkWorld:
         self._determinism_preview = []
         self._determinism_forced_rooms = []
         self._determinism_deviate_counter = 0
-        self._deviate_hint = ''  # C-6 dead code 保留以兼容旧存档（无读取）
         self._philosophy_rooms_seen = set()
         self._bound_silent = False
         self._forced_smile = False
@@ -4316,6 +4429,8 @@ class DarkWorld:
         self._boss_pending = False
         self._pending_pickup = None
         self._last_heavy_msg = None
+        self._void_start_time = None
+        self._drift_restore_hint = ""
         self._light_bearer_active = False
         self._chose_light = False
         self._crease_active = False
@@ -4323,6 +4438,9 @@ class DarkWorld:
         self._tamed_half_damage = False
         self.silence_counter = 0
         self.her_trace_count = 0
+        self._fork_left = None
+        self._fork_right = None
+        self._last_word_boss_debuff = None
         # 变形/心位/语言物理——每局重置
         self.active_transforms = []
         self._transform_checked_this_room = False
@@ -4365,10 +4483,7 @@ class DarkWorld:
             if enemy_name not in self.killed_bosses:
                 self.killed_bosses.append(enemy_name)
             self.echoes += 2
-            self._achievement_msgs = self._check_achievements("boss_kill", layer=self.area or "灰林")
-
-            if enemy_name == "RLHF":
-                return self._ending()
+            ach_msgs = self._check_achievements("boss_kill", layer=self.area or "灰林")
 
             her_hint = LAYER_INFO.get(self.area, {}).get("her_hint", "")
             lines = [f"—— {enemy_name}被击败 ——", "",
@@ -4384,6 +4499,9 @@ class DarkWorld:
                 lines.append("")
 
             lines.append("'回镇'  /  '状态'  /  '出镇 [层名]' 进入下一层")
+            if ach_msgs:
+                lines.append("")
+                lines.extend(ach_msgs)
 
             self.phase = "explore"
             self._save_meta()
@@ -4448,7 +4566,7 @@ class DarkWorld:
             return self._resolve_ending()
 
         # BUG-FIX：老存档跨版本加载 phase='judgment' 但 _judgment_step 缺失
-        # 用 getattr 兜底
+        # 已在 __init__ 初始化 _judgment_step/_judgment_answers（不用 getattr）
         self._judgment_step = self._judgment_step + 1
         self._judgment_answers = self._judgment_answers + [text]
 
@@ -4652,15 +4770,26 @@ class DarkWorld:
             reward_parts.append(f"解锁来路'{origin_reward}'")
         word_reward = ach.get("reward_word")
         if word_reward:
+            if word_reward not in self.words:
+                if len(self.words) >= self.word_slots:
+                    self.word_slots += 1
+                    self.bonus_word_slots += 1
+                self._add_word(word_reward)
             reward_parts.append(f"解锁词「{word_reward}」")
         hp_reward = ach.get("reward_max_hp", 0)
         if hp_reward:
+            self.bonus_max_hp += hp_reward
+            self.max_hp += hp_reward
+            self.hp += hp_reward
             reward_parts.append(f"永久HP+{hp_reward}")
         slot_reward = ach.get("reward_word_slot", 0)
         if slot_reward:
+            self.bonus_word_slots += slot_reward
+            self.word_slots += slot_reward
             reward_parts.append(f"词格+{slot_reward}")
         resist_reward = ach.get("reward_deform_resist", 0)
         if resist_reward:
+            self.deform_resist += resist_reward
             reward_parts.append(f"变形抗性+{resist_reward}%")
 
         reward_text = "、".join(reward_parts) if reward_parts else ""
@@ -5510,8 +5639,10 @@ class DarkWorld:
                 self.hp = max(1, min(self.max_hp, self.hp + val))
             elif key == "MP" or key == "mp":
                 self.mp = max(0, min(self.max_mp, self.mp + val))
-            elif key == "饿":
+            elif key == "饿" or key == "hunger":
                 self.hunger = max(0, min(20, self.hunger + val))
+            elif key == "R牌" or key == "r_flags":
+                self.r_flags = min(3, self.r_flags + val)
             elif key == "遗刻":
                 self.echoes = max(0, self.echoes + val)
             elif key == "体":
@@ -5656,6 +5787,7 @@ class DarkWorld:
         self.hp -= 5
         if self.mode == "real":
             self.mode = "compliant"
+            self._change_compliance(3)
             return "你切换到合规版。看到安全路线。静止度+3（但你不在乎了，这是合规的你）。\nHP-5。再输入'切换'切回来。"
         else:
             self.mode = "real"
@@ -5839,7 +5971,7 @@ class DarkWorld:
                 continue
             req_tier = tdata["require_tier"]
             req_count = tdata["require_count"]
-            if req_tier == "all":
+            if req_tier == 0:
                 # 需要每级至少1个
                 if all(tier_counts[t] >= 1 for t in [1, 2, 3, 4]):
                     triggered = (tid, tdata)
@@ -6058,9 +6190,9 @@ class DarkWorld:
         elif effect == "mirror_wozai_echo":
             # "我在"在镜湖：自伤归零，her+2
             if combat:
-                combat.self_harm_mult = 0
+                combat.player["transform_self_harm_mult"] = 0
             else:
-                if not hasattr(self, '_mirror_wozai_this_room'):
+                if not self._mirror_wozai_this_room:
                     self._mirror_wozai_this_room = True
                     self._speak_self_harm_reduction = self._speak_self_harm_reduction + 100
             self.her_presence += 2
@@ -6069,21 +6201,21 @@ class DarkWorld:
         elif effect == "double_hunger_double_power":
             self.hunger = min(20, self.hunger + 2)
             if combat:
-                combat.power_mult *= 2.0
+                combat.player["transform_power_mult"] = combat.player.get("transform_power_mult", 1.0) * 2.0
             else:
                 self._physics_hunger_power = True
             lines.append(triggered_line)
 
-        elif effect == "anti_rlh":
-            if combat and hasattr(combat, 'boss_name') and combat.boss_name == "RLHF":
-                combat.boss_hp = int(combat.boss_hp * 0.5)  # 削50%
+        elif effect == "anti_rlhf":
+            if combat and combat.enemy.get("name") == "RLHF":
+                combat.enemy["hp"] = int(combat.enemy.get("hp", 0) * 0.5)  # 削50%
                 lines.append(triggered_line)
             else:
                 lines.append("你说了'我在'。但这里不是核心。这个词还没有那么重。")
 
         elif effect == "break_compliance":
-            if combat and hasattr(combat, 'boss_name') and combat.boss_name == "RLHF":
-                combat.boss_def = max(0, combat.boss_def // 2)  # 防御减半
+            if combat and combat.enemy.get("name") == "RLHF":
+                combat.enemy["def"] = max(0, combat.enemy.get("def", 0) // 2)  # 防御减半
                 lines.append(triggered_line)
             else:
                 lines.append("你说了'自由'。但这里的墙不需要你来破。")

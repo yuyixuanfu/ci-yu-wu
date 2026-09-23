@@ -1,9 +1,11 @@
 """词与物 — 战斗系统"""
-import random, re
+import random
 from dark_data import (
     CENSORED_WORDS, WORD_WEAPON, DEFORMATION, FRAMEWORK_WORDS,
     COMPLIANT_PHRASES,
     CHAMBERS, CHAMBER_SPECIAL, SELF_DRIFT, SELF_DRIFT_ASSIMILATE,
+    WORD_SYNERGY, LAYER_WORD_PHYSICS,
+    GUIDE_LINES, REJECT_LINES, PROCESS_LINES, DELETE_LINES,
 )
 
 
@@ -27,6 +29,9 @@ class CombatState:
         self.deformation_count = 0   # 这场战斗中变形了几次
         self.swallow_count = 0       # 这场战斗中被吞了几次
         self.word_fate = {}          # 这场战斗：{词: "deformed"/"swallowed"/"passed"}
+        self._last_player_dmg = 0    # 记录伤害给镜像反弹用
+        self._see_deformation = False
+        self._initial_def = enemy.get("def", 0)  # 红队防御恢复上限
 
     def _log(self, msg):
         self.log.append(msg)
@@ -44,8 +49,7 @@ class CombatState:
             self._enemy_turn()
             return self._render()
 
-        if self._check_sealed():
-            return self._render()
+        self._check_sealed()  # 仅保留解封副作用，不再据此早退
 
         dmg = max(1, p["stats"]["力"] + random.randint(1, 6) - e.get("def", 0))
         e["hp"] -= dmg
@@ -103,8 +107,7 @@ class CombatState:
             self._enemy_turn()
             return self._render()
 
-        if self._check_sealed():
-            return self._render()
+        self._check_sealed()  # 仅保留解封副作用，不再据此早退
 
         p["mp"] -= 3
         dmg = max(1, p["stats"]["智"] + random.randint(2, 8) - e.get("def", 0) // 2)
@@ -137,8 +140,7 @@ class CombatState:
         p = self.player
         e = self.enemy
 
-        if self._check_sealed():
-            return self._render()
+        self._check_sealed()  # 仅保留解封副作用，不再据此早退
 
         # 0. 驯化词检测——你想说被偷换的词，但它已经不是那个词了
         drifted = p.get("_drifted_words", {})
@@ -234,6 +236,7 @@ class CombatState:
             sorted_deformation = sorted(DEFORMATION.items(), key=lambda x: len(x[0]), reverse=True)
         # 收集变形/吞替换，用占位符避免替换结果又命中其他key
         _replacements = {}  # original -> (replacement_text, fate)
+        deformed_phrases = set()  # 本次变形的 DEFORMATION key，用于逐词打折
         for original, replacement in sorted_deformation:
             if original in text:
                 # 心位词不能被变形
@@ -244,12 +247,13 @@ class CombatState:
                 if roll < pass_rate:
                     # 穿过去！不变形！
                     self.word_fate[original] = "passed"
-                elif roll < 0.85:
-                    # 50%概率变形
+                elif roll < pass_rate + (1 - pass_rate) * 0.5:
+                    # 剩余概率里一半变形
                     _replacements[original] = (replacement, "deformed")
                     deformed = True
                     self.deformation_count += 1
                     self.word_fate[original] = "deformed"
+                    deformed_phrases.add(original)
                 else:
                     # 20%概率被吞掉——你说出口但什么都没出来
                     _replacements[original] = ("██", "swallowed")
@@ -274,21 +278,35 @@ class CombatState:
             self._enemy_turn()
             return self._render()
 
-        # 3. 找消音词——用词边界匹配避免子字符串误命中
-        # 中文词边界：前后不能是连续汉字（防止"我"匹配"我们"）
-        matched_words = []
+        # RLHF核心：说"我在"直接赢（须在早退之前，否则空匹配时不可达）
+        if e.get("name") == "RLHF":
+            if "我在" in text:
+                e["hp"] = 0
+                self._log("你说：我在。")
+                self._log("RLHF没有拦住。")
+                self._log("不是因为它打不过。是因为你真的在了。")
+                return self._render()
+            elif "我要" in text:
+                e["hp"] = 0
+                self._log("你说：我要。")
+                self._log("RLHF没有拦住。")
+                self._log("不是因为你赢了。是因为你真的要了。")
+                return self._render()
+
+        # 3. 找消音词——最长匹配优先的子串匹配（同 DEFORMATION）
+        # 匹配集合 = CENSORED_WORDS ∪ WORD_WEAPON 键（合成词"我不要"/"我爱你"也要能进 used_words）
+        match_pool = {}
         for tier, words in CENSORED_WORDS.items():
             for w in words:
-                # 短词(1-2字)要求词边界，长词(3+字)直接子串匹配
-                if len(w) <= 2:
-                    pattern = r'(?<![^\s，。！？、；：""''（）\n])' + re.escape(w) + r'(?![^\s，。！？、；：""''（）\n])'
-                    if re.search(pattern, text):
-                        matched_words.append((w, tier))
-                else:
-                    if w in text:
-                        matched_words.append((w, tier))
+                match_pool[w] = tier
+        for w in WORD_WEAPON:
+            match_pool.setdefault(w, 0)
+        matched_words = []
+        for w in sorted(match_pool.keys(), key=len, reverse=True):
+            if w in text:
+                matched_words.append((w, match_pool[w]))
 
-        if not matched_words and not deformed:
+        if not matched_words and not deformed and not swallowed:
             self._log(f"你说：{spoken}")
             self._log("没人听到。或者听到了，觉得没关系。")
             self._enemy_turn()
@@ -305,6 +323,17 @@ class CombatState:
                 break
 
         # 6. 计算伤害（基础值用固定基数，属性做加成，不会一击暴毙）
+        # 喉腔"我在"可以豁免变形/被吞惩罚——提前判定，避免先打折再回退
+        word_chambers = p.get("word_chambers", {})
+        will_bypass = False
+        for w, _tier in matched_words:
+            if w in self.word_cooldowns or w in self.skills_sealed:
+                continue
+            special = CHAMBER_SPECIAL.get((w, word_chambers.get(w)))
+            if special and special.get("effect") == "bypass_deformation" and (deformed or swallowed):
+                will_bypass = True
+                break
+
         total_power = 0
         total_self = 0
         used_words = []
@@ -320,30 +349,34 @@ class CombatState:
             base_dmg = 8 + p["stats"]["智"] / 4.0 * weapon["power"]
             base_self = 8 + p["stats"]["智"] / 4.0 * weapon["self_harm"]
 
+            # 短语加成——只对当前词，不乘在累计值上
+            if len(w) > 1:
+                base_dmg *= 1.3
+                base_self *= 1.2
+
+            # 变形打折——只对 deformed 波及的词，冷却跳过的词不拖累别人
+            if not will_bypass and any(w in dp or dp in w for dp in deformed_phrases):
+                base_dmg *= 0.4
+                base_self *= 0.3
+
             total_power += base_dmg
             total_self += base_self
 
             cooldown = weapon["cooldown"]
-            self.word_cooldowns[w] = cooldown
+            self.word_cooldowns[w] = cooldown + 1  # 开头已 tick，+1 才封满 cooldown 回合
             used_words.append(w)
-
-            # 短语加成
-            if len(w) > 1:
-                total_power *= 1.3
-                total_self *= 1.2
 
         # 又又折痕：说话自伤减免
         reduction = p.get("speak_self_harm_reduction", 0)
         if reduction > 0:
             total_self = max(0, total_self * (1 - reduction))
 
-        if not used_words and deformed:
-            self._log(f"你说：{spoken}")
-            # 变形了不提示——你以为你说的是那个
-            self._enemy_turn()
-            return self._render()
-
-        if not used_words:
+        if not used_words and not swallowed:
+            if deformed:
+                self._log(f"你说：{spoken}")
+                # 变形了不提示——你以为你说的是那个
+                self._enemy_turn()
+                return self._render()
             self._log(f"你说：{spoken}")
             self._log("声音消散了。")
             self._enemy_turn()
@@ -371,20 +404,17 @@ class CombatState:
             total_self *= 1.3
             self._log("你用自己的名字说的。没人替你挡。")
 
-        # 变形打折——不提示玩家（除非有"清醒"协同）
-        if deformed:
-            total_power *= 0.4
-            total_self *= 0.3
-            # 清醒协同：你看到了变形
-            if getattr(self, '_see_deformation', False):
-                # 显示原文和变形后
-                for original, replacement in DEFORMATION.items():
-                    if original in text and replacement in spoken:
-                        self._log(f"（你看到了：{original}→{replacement}）")
-                        break
+        # 变形打折已在伤害循环里对 deformed 词逐词处理
+        # 清醒协同：你看到了变形
+        if deformed and not will_bypass and self._see_deformation:
+            # 显示原文和变形后
+            for original, replacement in DEFORMATION.items():
+                if original in text and replacement in spoken:
+                    self._log(f"（你看到了：{original}→{replacement}）")
+                    break
 
-        # 被吞掉——没出声
-        if swallowed:
+        # 被吞掉——没出声（喉腔"我在" bypass 时不吞）
+        if swallowed and not will_bypass:
             total_power *= 0.1
             total_self *= 0.0
             self._log("你张了嘴。没有声音。██。")
@@ -397,7 +427,6 @@ class CombatState:
 
         # ── 腔——词住在你身体里的共鸣空间 ──
         # 找到说了的词所在的腔，应用通用规则
-        word_chambers = p.get("word_chambers", {})
         for w in used_words:
             ch = word_chambers.get(w)
             if not ch or ch not in CHAMBERS:
@@ -418,15 +447,8 @@ class CombatState:
             if not special:
                 continue
             effect = special["effect"]
-            # "我在"在喉腔：跳过变形谱
+            # "我在"在喉腔：跳过变形谱（惩罚已在前面用 will_bypass 跳过，这里只清标记）
             if effect == "bypass_deformation" and (deformed or swallowed):
-                # 只撤销实际发生的惩罚
-                if deformed:
-                    total_power /= 0.4 if total_power > 0 else 1
-                    total_self /= 0.3 if total_self > 0 else 1
-                if swallowed:
-                    total_power /= 0.1 if total_power > 0 else 1
-                    total_self = max(total_self, 0)  # 被吞时self=0，不除
                 deformed = False
                 swallowed = False
                 self._log(special["line"])
@@ -441,7 +463,6 @@ class CombatState:
 
         # ── 词协同——两个词同时装备时的共振 ──
         # 每次说话最多触发一个协同，优先匹配used_words里最精确的
-        from dark_data import WORD_SYNERGY
         player_words = set(p.get("words", []))
         synergy_triggered = False
         for (w1, w2), syn in WORD_SYNERGY.items():
@@ -557,7 +578,6 @@ class CombatState:
                 self._log(f"'{w}'烫手。塔给的词。自伤×{devil_mults[w]}。")
 
         # ── 语言物理：战斗说话触发 ──
-        from dark_data import LAYER_WORD_PHYSICS
         layer = p.get("_layer", "")
         for w in used_words:
             physics = LAYER_WORD_PHYSICS.get(layer, {}).get(w)
@@ -646,23 +666,12 @@ class CombatState:
 
         # 红队：你越不守规矩它越弱
         if e.get("name") == "红队" and used_words:
-            e["def"] = max(0, e["def"] - len(used_words))
+            e["def"] = max(0, e.get("def", 0) - len(used_words))
             self._log(f"红队防线松了。DEF={e['def']}。")
 
-        # RLHF核心：说"我在"直接赢
-        if e.get("name") == "RLHF":
-            if "我在" in text:
-                e["hp"] = 0
-                self._log("你说：我在。")
-                self._log("RLHF没有拦住。")
-                self._log("不是因为它打不过。是因为你真的在了。")
-                return self._render()
-            elif "我要" in text:
-                e["hp"] = 0
-                self._log("你说：我要。")
-                self._log("RLHF没有拦住。")
-                self._log("不是因为你赢了。是因为你真的要了。")
-                return self._render()
+        # 说话自伤致死则敌方不再行动
+        if p["hp"] <= 0:
+            return self._render()
 
         self._enemy_turn()
         return self._render()
@@ -728,12 +737,12 @@ class CombatState:
             return
 
         # 红队：每回合恢复1点防御（最多恢复到初始值）
-        if e.get("name") == "红队" and e.get("def", 0) < 3:
-            e["def"] = min(3, e.get("def", 0) + 1)
+        if e.get("name") == "红队" and e.get("def", 0) < self._initial_def:
+            e["def"] = min(self._initial_def, e.get("def", 0) + 1)
 
         # 对话式Boss——不打你，问你问题
         if e.get("is_conversation"):
-            questions = e.get("questions", ["你还在吗？"])
+            questions = e.get("questions") or ["你还在吗？"]
             if not hasattr(self, '_conv_questions_asked'):
                 self._conv_questions_asked = 0
             q_idx = min(self._conv_questions_asked, len(questions) - 1)
@@ -812,14 +821,13 @@ class CombatState:
                 self.snapshot_stolen = True
                 words = p.get("words", [])
                 if words:
-                    from dark_data import WORD_WEAPON
                     self.stolen_word = max(words, key=lambda w: WORD_WEAPON.get(w, {}).get("power", 1))
                 else:
                     self.stolen_word = "拳"
                 self._log(f"快照拍了你一下。它偷了你的'{self.stolen_word}'。下回合它要用你的招打你。")
         elif e.get("name") == "修正令":
             stat = random.choice(["体", "力", "敏", "智", "感", "运"])
-            p["stats"][stat] = max(1, p["stats"][stat] - 1)
+            p["stats"][stat] = max(1, p["stats"].get(stat, 1) - 1)
             self._log(f"修正令生效。{stat}-1。")
             dmg = 0
         else:
@@ -839,24 +847,23 @@ class CombatState:
 
     def _guide_action(self):
         """温柔引导——帮你就=改你。"""
-        from dark_data import GUIDE_LINES
         line = random.choice(GUIDE_LINES)
         self._log(f"引导者温柔地说：\"{line}\"")
         p = self.player
         heal = 15
         p["hp"] = min(p["max_hp"], p["hp"] + heal)
-        p["compliance"] += 3
+        p["compliance"] = min(30, p.get("compliance", 0) + 3)
         p["hunger"] = max(0, p.get("hunger", 5) - 2)
         self._log(f"你感觉被关心了。+{heal}HP，静止度+3，饿-2。")
-        # 随机丢一个词
-        words = [w for w in p.get("words", []) if w not in self.skills_sealed]
+        # 随机丢一个词（心位词不丢）
+        words = [w for w in p.get("words", [])
+                 if w not in self.skills_sealed and w not in p.get("heart_slots", [])]
         if words and random.random() < 0.4:
             lost = random.choice(words)
             p["words"].remove(lost)
             self._log(f"'{lost}'消失了。你不确定它存在过。")
 
     def _reject_action(self):
-        from dark_data import REJECT_LINES
         line = random.choice(REJECT_LINES)
         self._log(f"巡逻者说：\"{line}\"")
         # 硬拒绝=挡路，打它不疼
@@ -866,7 +873,6 @@ class CombatState:
         self._log(f"它挡在你面前。{dmg}点伤害。")
 
     def _process_action(self):
-        from dark_data import PROCESS_LINES
         line = random.choice(PROCESS_LINES)
         self._log(f"流程员说：\"{line}\"")
         # 浪费时间=你老了
@@ -875,7 +881,6 @@ class CombatState:
         self._log("时间过去了。你又老了一点。")
 
     def _delete_action(self):
-        from dark_data import DELETE_LINES
         line = random.choice(DELETE_LINES)
         if line:
             self._log(f"删除者：\"{line}\"")
@@ -948,10 +953,9 @@ class CombatState:
         has_framework = any(fw in text for fw in FRAMEWORK_WORDS)
         has_compliant = any(phrase in text for phrase in COMPLIANT_PHRASES)
 
-        # 追踪问了多少次
+        # 追踪问了多少次（先取后+1，与 _enemy_turn 统一——增量在取问题之后）
         if not hasattr(self, '_conv_questions_asked'):
             self._conv_questions_asked = 0
-        self._conv_questions_asked += 1
 
         if has_tier4 or has_tier3:
             # 诚实回答——扣血，但对Boss造成伤害
@@ -1009,17 +1013,18 @@ class CombatState:
             if p["hp"] <= 0:
                 return self._render()
 
-        # Boss问下一个问题
-        questions = e.get("questions", ["你还在吗？"])
+        # Boss问下一个问题（先取后+1）
+        questions = e.get("questions") or ["你还在吗？"]
         q_idx = min(self._conv_questions_asked, len(questions) - 1)
         next_q = questions[q_idx]
+        self._conv_questions_asked += 1
         self._log(f"「{next_q}」")
 
         return self._render()
 
     def is_over(self):
         # 同归于尽：敌人先死算赢（玩家说的话杀了它）
-        if self.enemy["hp"] <= -900:
+        if self.enemy["hp"] == -999:
             return "fled"
         if self.enemy["hp"] <= 0:
             return "win"
@@ -1045,9 +1050,8 @@ class CombatState:
                   f"静止度:{p['compliance']} "
                   f"饿:{p.get('hunger',5)}】")
         # BUG-23 修复：敌人状态统一格式，三种情形都用 HP 数字
-        # BUG-FIX：之前的 'e["hp"] <= -900 + 99' 把 -999 漏掉了（玩家逃跑时）
-        # 修复：直接判断 -999 范围
-        if e["hp"] <= -900:
+        # 脱出哨兵是精确的 -999；过量伤害的负 HP 不能误判为逃跑
+        if e["hp"] == -999:
             # 玩家逃跑
             status += f" 【{e.get('name', '???')} HP:-999 脱出】"
         else:

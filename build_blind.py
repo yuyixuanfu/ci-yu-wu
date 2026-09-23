@@ -104,7 +104,9 @@ class CiyuwuGame:
         try:
             state = _snapshot(self._w)
             save_game(state)
-        except Exception as _e:            import sys; print(f"[WARN] {{_e}}", file=sys.stderr)
+        except (OSError, TypeError, ValueError) as _e:
+            import sys
+            print(f"[WARN] {{_e}}", file=sys.stderr)
 
     @property
     def phase(self):
@@ -164,7 +166,7 @@ def cmd(instruction):
 if __name__ == "__main__":
     if len(sys.argv) < 2 or not sys.argv[1].strip():
         print("Usage: python ciyuwu_blind.py [command]")
-        sys.exit(0)
+        sys.exit(1)
     instruction = " ".join(sys.argv[1:]).strip()
     if instruction.lower() in ("new", "new_game"):
         print(new_game())

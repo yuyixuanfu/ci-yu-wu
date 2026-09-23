@@ -1,5 +1,6 @@
-import json, sys, os
+import json, sys, os, copy
 os.environ["PYTHONUTF8"] = "1"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from engine import new_game, cmd
 
 PASS = FAIL = 0
@@ -20,11 +21,9 @@ for i in range(20):
     sub = bar.get("sub", "")
     if sub == "pickup":
         s, t = cmd(s, "不捡")
-    if bar.get("phase") == "combat":
-        # 前进
-        s_fwd = dict(s)
+    if bar.get("phase") == "战斗":
+        s_fwd = copy.deepcopy(s)
         s_fwd, t_fwd = cmd(s_fwd, "前进")
-        # 攻
         s, t_atk = cmd(s, "攻")
         fwd_lines = [l for l in t_fwd.strip().splitlines() if not l.startswith("{")]
         atk_lines = [l for l in t_atk.strip().splitlines() if not l.startswith("{")]
@@ -47,7 +46,7 @@ bar = json.loads(t.strip().splitlines()[-1])
 if bar.get("sub") == "pickup":
     comp_before = bar.get("compliance", 0)
     # 捡
-    s_pick = dict(s)
+    s_pick = copy.deepcopy(s)
     s_pick, t_pick = cmd(s_pick, "捡")
     bar_pick = json.loads(t_pick.strip().splitlines()[-1])
     comp_pick = bar_pick.get("compliance", 0)
@@ -77,12 +76,12 @@ for seed in [1, 7, 42, 99, 123, 256, 500, 777]:
         sub = bar.get("sub", "")
         phase = bar.get("phase", "")
         if sub == "pickup": s, t = cmd(s, "不捡"); continue
-        if phase == "fork": s, t = cmd(s, "左"); continue
-        if phase == "combat":
+        if phase == "分叉路": s, t = cmd(s, "左"); continue
+        if phase == "战斗":
             for j in range(20):
                 s, t = cmd(s, "攻")
                 b = json.loads(t.strip().splitlines()[-1])
-                if b.get("phase") != "combat": break
+                if b.get("phase") != "战斗": break
             continue
         if sub == "special":
             s, t = cmd(s, "跳过")

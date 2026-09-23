@@ -3,3 +3,6 @@ __pycache__/
 *.json
 !tool-schema.json
 !ending.txt
+ciyuwu_save.json.corrupt
+ciyuwu_save.json.lock
+ciyuwu_save.json.tmp

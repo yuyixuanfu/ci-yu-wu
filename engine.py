@@ -4,8 +4,8 @@
 接口:
   new_game()          → (state, text)   开新局
   cmd(state, inst)    → (state, text)   执行指令
-  load_game()         → state           从文件读
-  save_game(state)    → None            存文件
+  load_game()         → state|None|LOAD_CORRUPT  从文件读（损坏≠无档）
+  save_game(state)    → bool            存文件（True=成功）
 
 AI接入方式:
   1. 函数调用: import engine; state = engine.new_game()[0]; state, text = engine.cmd(state, "新角")
@@ -21,7 +21,7 @@ AI接入方式:
 import sys, os, io, json, time, traceback
 
 # 确保UTF-8输出
-if sys.stdout.encoding != 'utf-8':
+if (sys.stdout.encoding or '').lower() != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 try:
@@ -38,13 +38,16 @@ def _atomic_json_write(path, data):
     """原子 JSON 写入：写 .tmp 后 rename。失败时清理残留 .tmp 文件。
     F-3 修复：原版 except: pass 会留下 .tmp 永久残留，现在用 finally 清理。
     ST-2 修复：进程内线程锁防止并发 .tmp 冲突。
+    返回 True/False 显式状态（ISSUE-4）；allow_nan=False 禁写非法 JSON（ISSUE-15）。
     """
     tmp = path + ".tmp"
+    ok = False
     with _atomic_write_lock:
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2, allow_nan=False)
             os.replace(tmp, path)
+            ok = True
         except Exception as e:
             import sys
             print(f"[WARN] _atomic_json_write 失败 {path}: {e}", file=sys.stderr)
@@ -55,6 +58,7 @@ def _atomic_json_write(path, data):
                     os.remove(tmp)
             except Exception as _e:
                 import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
+    return ok
 
 # ── 确定性PRNG ──────────────────────────────────────
 def _mulberry32(seed):
@@ -72,27 +76,33 @@ def _mulberry32(seed):
 class _DetRandom:
     """替换random的确定性随机。S2-1修复：加threading.Lock保护内部状态。
     只在最底层 _next_raw() 加锁，上层方法通过 _next_raw() 间接获取随机数，
-    避免 Lock 不可重入导致死锁。"""
+    避免 Lock 不可重入导致死锁。
+    ISSUE-2 修复：_state 保存完整生成器状态（内部seed，随每次抽取更新），
+    而非只存初始 seed——snapshot/restore 往返该值即可精确续跑，不再把序列拨回开头。"""
     def __init__(self, seed=42):
         self._lock = _threading.Lock()
-        self._gen = _mulberry32(seed)
-        self._state = seed
+        self._state = seed & 0xFFFFFFFF
+        self._gen = _mulberry32(self._state)
 
     def _next_raw(self):
         """底层：线程安全地获取下一个原始随机整数。"""
         with self._lock:
-            return next(self._gen)
+            val = next(self._gen)
+            # 与 _mulberry32 内部 seed 同步（每步先 +0x6D2B79F5）
+            self._state = (self._state + 0x6D2B79F5) & 0xFFFFFFFF
+            return val
 
     def seed(self, s):
         with self._lock:
-            self._state = s
-            self._gen = _mulberry32(s)
+            self._state = s & 0xFFFFFFFF
+            self._gen = _mulberry32(self._state)
 
     def random(self):
         return self._next_raw() / 0xFFFFFFFF
 
     def randint(self, a, b):
-        return a + int(self.random() * (b - a + 1))
+        # ISSUE-8 修复：random()==1.0 时会算出 b+1 越界，钳到 b
+        return min(a + int(self.random() * (b - a + 1)), b)
 
     def choice(self, seq):
         return seq[self.randint(0, len(seq) - 1)]
@@ -145,11 +155,61 @@ def _patch_random():
     dark_data._rng = _det_rng
 
 
+# 跨局 meta 字段名与 DarkWorld._save_meta/_load 统一（ISSUE-7）
+_META_KEYS = ("echoes", "runs", "echo_map", "killed_bosses",
+              "unlocked_origins", "wall_writings", "total_wait",
+              "unlocked_achievements", "heart_slots",
+              "cross_word_stats", "game_diary",
+              "cross_deform_count", "cross_swallow_count",
+              "tavern_regular_visits")
+# meta 键名 → DarkWorld 实例属性名（酒馆常客计数在实例上带下划线前缀）
+_META_ATTRS = {"tavern_regular_visits": "_tavern_regular_visits"}
+
+
+def _merge_save_meta(self):
+    """ISSUE-3 修复：meta 写入并入已有全量快照——只更新 _META_KEYS，
+    其余键原样保留。禁止用 14 个 meta 键覆盖 save_game() 写入的全量快照。
+    由 _ensure_init 挂到 DarkWorld._save_meta，覆盖其全部调用点。"""
+    data = {}
+    for k in _META_KEYS:
+        attr = _META_ATTRS.get(k, k)
+        if hasattr(self, attr):
+            data[k] = getattr(self, attr)
+    existing = {}
+    if os.path.exists(_SAVE_FILE):
+        try:
+            with open(_SAVE_FILE, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            if not isinstance(existing, dict):
+                existing = {}
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError,
+                TypeError, IOError, OSError) as e:
+            # 旧档损坏：先备份再写 meta，不静默丢弃
+            backup = _SAVE_FILE + ".corrupt"
+            try:
+                os.replace(_SAVE_FILE, backup)
+                print(f"[WARN] meta合并前存档损坏，已备份到 {backup}: {e}", file=sys.stderr)
+            except OSError as _e:
+                print(f"[WARN] meta合并前存档损坏且备份失败: {_e}", file=sys.stderr)
+            existing = {}
+    old_runs = existing.get("runs") if isinstance(existing, dict) else None
+    existing.update(data)
+    # runs 取 max：指定 seed 的可复现局会把局数归零（见 new_game），不能因此丢生涯计数
+    if isinstance(old_runs, int) and isinstance(data.get("runs"), int):
+        existing["runs"] = max(old_runs, data["runs"])
+    _atomic_json_write(_SAVE_FILE, existing)
+
+
 # ── 快照 ────────────────────────────────────────────
 _SKIP_ATTRS = {'combat'}
 
 # F-4/ST-1 修复：存档属性白名单动态构建——从 DarkWorld() 实例收集所有
 # 在 __init__ 中设置的属性。防止漏字段（如 _go_town、_devil_self_harm_mult 等）。
+# ISSUE-1/13 修复：白名单延迟到 _ensure_init 再构建——import 期执行
+# `from dark_engine import DarkWorld` 会与 dark_engine 的 `from engine import ...`
+# 形成循环导入（特定导入顺序崩），且 DarkWorld() 构造自带读档 IO 副作用。
+_RESTORE_WHITELIST = None
+
 def _build_whitelist():
     """运行时构造白名单：new_game 一次，收集所有非方法、非内置属性。"""
     from dark_engine import DarkWorld
@@ -164,7 +224,12 @@ def _build_whitelist():
         attrs.add(attr)
     return frozenset(attrs)
 
-_RESTORE_WHITELIST = _build_whitelist()
+def _ensure_whitelist():
+    """延迟构建白名单（进程内一次）。"""
+    global _RESTORE_WHITELIST
+    if _RESTORE_WHITELIST is None:
+        _RESTORE_WHITELIST = _build_whitelist()
+    return _RESTORE_WHITELIST
 
 def _to_jsonable(obj, _seen=None):
     if _seen is None:
@@ -253,23 +318,30 @@ def _snapshot(w):
             '_conv_questions_asked': getattr(c, '_conv_questions_asked', 0),
             '_defend_streak': getattr(c, '_defend_streak', 0),
         }
-    # PRNG状态
+    # PRNG状态（完整生成器状态，见 _DetRandom._state）
     state['_rng_state'] = _det_rng._state
     return state
 
 def _restore(w, state):
-    """恢复快照。F-4 修复：只恢复白名单内的属性，避免恶意/损坏存档注入。"""
+    """恢复快照。F-4 修复：只恢复白名单内的属性，避免恶意/损坏存档注入。
+    ISSUE-6 修复：不修改入参 state——拷贝后再 pop。"""
+    if not isinstance(state, dict):
+        import sys
+        print(f"[WARN] _restore: state 不是 dict（{type(state).__name__}），跳过", file=sys.stderr)
+        return
+    state = dict(state)  # ISSUE-6：拷贝，避免 pop 隐式修改调用方对象
     rng_state = state.pop('_rng_state', None)
     if rng_state is not None and isinstance(rng_state, int):
         _det_rng.seed(rng_state)
 
     combat_data = state.pop('_combat', None)
+    whitelist = _ensure_whitelist()
     rejected = []
     for attr, val in state.items():
         if attr in _SKIP_ATTRS:
             continue
         # F-4 修复：白名单 + 基础类型校验
-        if attr not in _RESTORE_WHITELIST:
+        if attr not in whitelist:
             rejected.append(attr)
             continue
         try:
@@ -284,44 +356,76 @@ def _restore(w, state):
     # 恢复combat
     if combat_data:
         from dark_combat import CombatState
-        player = _from_jsonable(combat_data['player'])
-        enemy = _from_jsonable(combat_data['enemy'])
-        c = CombatState(player, enemy, combat_data.get('layer', '灰林'))
-        c.turn = combat_data.get('turn', 0)
-        c.log = combat_data.get('log', [])  # BUG-20 修复：补 log 字段
-        c.word_cooldowns = _from_jsonable(combat_data.get('word_cooldowns', {}))
-        c.skills_sealed = _from_jsonable(combat_data.get('skills_sealed', []))
-        c.deformation_count = combat_data.get('deformation_count', 0)
-        c.swallow_count = combat_data.get('swallow_count', 0)
-        c.word_fate = _from_jsonable(combat_data.get('word_fate', {}))
-        c.player_defending = combat_data.get('player_defending', False)
-        c.snapshot_stolen = combat_data.get('snapshot_stolen', False)
-        c.stolen_word = combat_data.get('stolen_word', None)
-        c.compliance_declarations = combat_data.get('compliance_declarations', 0)
-        c.silence_bonus = combat_data.get('silence_bonus', False)
-        c.silence_turns = combat_data.get('silence_turns', 0)
-        # BUG-20 修复：补全其余 _private 字段
-        c._last_player_dmg = combat_data.get('_last_player_dmg', 0)
-        c._her_echo_spent = combat_data.get('_her_echo_spent', False)
-        c._see_deformation = combat_data.get('_see_deformation', False)
-        if '_conv_questions_asked' in combat_data:
-            c._conv_questions_asked = combat_data['_conv_questions_asked']
-        if '_defend_streak' in combat_data:
-            c._defend_streak = combat_data['_defend_streak']
-        w.combat = c
+        # ISSUE-12 修复：.get + 明确错误，缺 player/enemy 不再直接下标崩溃
+        player = combat_data.get('player')
+        enemy = combat_data.get('enemy')
+        if player is None or enemy is None:
+            import sys
+            print("[WARN] _restore: _combat 缺少 player/enemy 键，跳过战斗恢复", file=sys.stderr)
+        else:
+            player = _from_jsonable(player)
+            enemy = _from_jsonable(enemy)
+            c = CombatState(player, enemy, combat_data.get('layer', '灰林'))
+            c.turn = combat_data.get('turn', 0)
+            c.log = combat_data.get('log', [])  # BUG-20 修复：补 log 字段
+            c.word_cooldowns = _from_jsonable(combat_data.get('word_cooldowns', {}))
+            c.skills_sealed = _from_jsonable(combat_data.get('skills_sealed', []))
+            c.deformation_count = combat_data.get('deformation_count', 0)
+            c.swallow_count = combat_data.get('swallow_count', 0)
+            c.word_fate = _from_jsonable(combat_data.get('word_fate', {}))
+            c.player_defending = combat_data.get('player_defending', False)
+            c.snapshot_stolen = combat_data.get('snapshot_stolen', False)
+            c.stolen_word = combat_data.get('stolen_word', None)
+            c.compliance_declarations = combat_data.get('compliance_declarations', 0)
+            c.silence_bonus = combat_data.get('silence_bonus', False)
+            c.silence_turns = combat_data.get('silence_turns', 0)
+            # BUG-20 修复：补全其余 _private 字段
+            c._last_player_dmg = combat_data.get('_last_player_dmg', 0)
+            c._her_echo_spent = combat_data.get('_her_echo_spent', False)
+            c._see_deformation = combat_data.get('_see_deformation', False)
+            if '_conv_questions_asked' in combat_data:
+                c._conv_questions_asked = combat_data['_conv_questions_asked']
+            if '_defend_streak' in combat_data:
+                c._defend_streak = combat_data['_defend_streak']
+            w.combat = c
 
 
 # ── 状态栏 ──────────────────────────────────────────
 # S3说明：此函数输出JSON格式。ciyuwu_server._status_from_state()输出竖线分隔格式。
 # 两种格式并存，AI客户端需同时支持。长期建议统一为JSON。
-def _status_bar(w):
-    """紧凑JSON状态栏——让AI知道在哪。"""
-    phase_names = {
-        "init": "开始", "creation": "创建角色", "town": "镇上",
-        "explore": "探索", "combat": "战斗", "fork": "分叉路",
-        "dead": "死亡", "dead_who": "死后问答", "dead_wipe": "存档选择",
-        "void": "虚空", "judgment": "审问", "ending": "结局",
-    }
+# ISSUE-16 修复：phase 中文名提为常量，避免散落字符串
+_PHASE_NAMES = {
+    "init": "开始", "creation": "创建角色", "town": "镇上",
+    "explore": "探索", "combat": "战斗", "fork": "分叉路",
+    "dead": "死亡", "dead_who": "死后问答", "dead_wipe": "存档选择",
+    "void": "虚空", "judgment": "审问", "ending": "结局",
+}
+
+
+class _StateView:
+    """state dict 的属性视图——让 _status_bar 能在失败路径复用（ISSUE-11）。
+    快照不含 combat（_SKIP_ATTRS）；缺失字段返回 None 不崩。"""
+    def __init__(self, d):
+        self.combat = None
+        if isinstance(d, dict):
+            self.__dict__.update(d)
+
+    def __getattr__(self, name):
+        if name.startswith('__') and name.endswith('__'):
+            raise AttributeError(name)
+        return None
+
+
+def _fail(state, msg, w=None):
+    """ISSUE-11：统一失败返回结构——与成功同构（文本+\\n+状态栏JSON），
+    状态栏带 error 字段以区分成功/失败。"""
+    src = w if w is not None else _StateView(state)
+    return state, f"{msg}\n" + _status_bar(src, error=msg)
+
+
+def _status_bar(w, error=None):
+    """紧凑JSON状态栏——让AI知道在哪。w 可为 DarkWorld 或 state dict。"""
+    phase_names = _PHASE_NAMES
     bar = {
         "phase": phase_names.get(w.phase, w.phase),
         "area": w.area or "",
@@ -343,7 +447,13 @@ def _status_bar(w):
         e = w.combat.enemy
         bar["enemy"] = {"name": e.get('name', '?'), "hp": e.get('hp', 0)}
     # 子状态——让AI知道卡在哪个交互里
-    if getattr(w, '_pending_pickup', None):
+    # 死亡阶段优先：_handle_death 不清 current_special 等残留交互时，
+    # sub 会被盖成 special，测试/AI 误判没进死亡流程
+    if w.phase == "dead_who":
+        bar["sub"] = "dead_who"
+    elif w.phase == "dead_wipe":
+        bar["sub"] = "dead_wipe"
+    elif getattr(w, '_pending_pickup', None):
         bar["sub"] = "pickup"
         bar["pickup"] = w._pending_pickup.get("name", "?")
     elif getattr(w, '_square_sit', 0) > 0:
@@ -363,14 +473,12 @@ def _status_bar(w):
         bar["sub"] = "crease"
     elif w.phase == "fork":
         bar["sub"] = "fork"
-    elif w.phase == "dead_who":
-        bar["sub"] = "dead_who"
-    elif w.phase == "dead_wipe":
-        bar["sub"] = "dead_wipe"
     elif w.phase == "judgment":
         bar["sub"] = "judgment"
         bar["judgment_step"] = getattr(w, '_judgment_step', 0)
-    return json.dumps(bar, ensure_ascii=False, separators=(',', ':'))
+    if error is not None:
+        bar["error"] = error
+    return json.dumps(bar, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
 
 
 # ── 核心接口 ────────────────────────────────────────
@@ -381,6 +489,11 @@ def _ensure_init():
     if not _initialized:
         sys.path.insert(0, _HERE)
         _patch_random()
+        # ISSUE-3：接管 meta 写入——并入全量快照，禁止覆盖 save_game 的全量档
+        from dark_engine import DarkWorld
+        DarkWorld._save_meta = _merge_save_meta
+        # ISSUE-1/13：白名单延迟到这里构建（避开循环导入与 import 期 IO）
+        _ensure_whitelist()
         _initialized = True
 
 def new_game(seed=None):
@@ -411,14 +524,18 @@ def new_game(seed=None):
     w = DarkWorld()
     text = w.cmd("帮助")
     # 恢复跨局meta——echoes/killed_bosses/achievements等不因新局重置
+    # ISSUE-7 修复：字段与 _save_meta 统一（含 tavern_regular_visits），
+    # meta 键名与实例属性名的差异走 _META_ATTRS 映射
     if meta:
-        for k in ["echoes", "runs", "echo_map", "killed_bosses",
-                   "unlocked_origins", "wall_writings", "total_wait",
-                   "unlocked_achievements", "heart_slots",
-                   "cross_word_stats", "game_diary",
-                   "cross_deform_count", "cross_swallow_count"]:
+        for k in _META_KEYS:
             if k in meta:
-                setattr(w, k, meta[k])
+                setattr(w, _META_ATTRS.get(k, k), meta[k])
+    if seed is not None:
+        # ISSUE-2 关联：接口约定"同seed同指令=同结果"。meta 的 runs 会让
+        # _start_creation 跳过 runs*7 个随机数，同 seed 的流程随存档漂移；
+        # 指定 seed 时本局归零局数保证可复现（生涯局数由 _merge_save_meta 以
+        # max 保留，不会因此丢档）
+        w.runs = 0
     w.phase = "init"
     state = _snapshot(w)
     return state, text
@@ -435,28 +552,37 @@ def cmd(state, instruction):
     from dark_engine import DarkWorld
 
     # M-1 修复：输入验证——限长 + 去控制字符
+    # ISSUE-11：失败与成功统一返回 (state, text+"\n"+状态栏)，状态栏带 error 字段
     if not isinstance(instruction, str):
-        return state, "?"
+        return _fail(state, "? 非字符串指令")
     instruction = instruction.strip()
     if not instruction:
-        return state, "?"
+        return _fail(state, "? 空指令")
     # 限长 200 字符（防止超长字符串拖慢正则）
+    # ISSUE-9 修复：截断不再静默，输出中带标记
+    truncated = False
     if len(instruction) > 200:
         instruction = instruction[:200]
+        truncated = True
     # 去控制字符（保留 emoji/中文/标点）
     instruction = ''.join(c for c in instruction if c == '\t' or c == '\n' or
                           not (ord(c) < 32 and c not in '\t\n') and ord(c) != 127)
     if not instruction:
-        return state, "?"
+        return _fail(state, "? 无有效指令")
 
     # 恢复世界
     w = DarkWorld()
     _restore(w, state)
 
+    notes = []  # 截断/拒绝标记（ISSUE-9/10/17）
     # 处理分号串联
     # BUG-12 修复：分号 + 批量混合——每个 part 内部也要识别批量（如 "前进5;说 我在"）
     if ';' in instruction:
-        parts = [p.strip() for p in instruction.split(';') if p.strip()][:10]  # S3: 分号串联上限10
+        raw_parts = [p.strip() for p in instruction.split(';') if p.strip()]
+        parts = raw_parts[:_MAX_PARTS]  # S3: 分号串联上限10
+        if len(raw_parts) > _MAX_PARTS:
+            # ISSUE-10 修复：声明截断，不再静默丢弃
+            notes.append(f"?已截断：丢弃{len(raw_parts) - _MAX_PARTS}条超限指令（串联上限{_MAX_PARTS}）")
         # BUG-15 修复：移除从未引用的 prev_phase 死代码
         texts = []
         for part in parts:
@@ -473,28 +599,36 @@ def cmd(state, instruction):
         full_text = "\n---\n".join(texts)
     else:
         w, full_text = _exec_with_batch(w, instruction)
+    if truncated:
+        notes.append("?指令超长，已截断至200字符")
 
     # 持久化跨局数据
     w._save_meta()
 
-    # 输出：游戏内容 + 状态栏
+    # 输出：标记 + 游戏内容 + 状态栏（状态栏恒为最后一行）
     new_state = _snapshot(w)
     status = _status_bar(w)
-    output = full_text + "\n" + status
+    body = "\n".join(notes + [full_text]) if notes else full_text
+    output = body + "\n" + status
     return new_state, output
 
+# ISSUE-16 修复：批量指令前缀提为常量
+_BATCHABLE = ("前进", "攻", "防", "术")
+_MAX_PARTS = 10    # 分号串联上限
+_BATCH_MAX = 20    # 批量次数上限
+
+
 def _parse_batch(inst):
-    """解析批量指令。返回 (基础指令, 次数) 或 None。"""
-    batchable = ["前进", "攻", "防", "术"]
-    for base in batchable:
+    """解析批量指令。返回 (基础指令, 次数) 或 None。
+    ISSUE-10：次数上限 _BATCH_MAX=20（调用方按需声明截断）。
+    ISSUE-17：count<1（如 "前进0"）返回 (base, 0) 而非 None——
+    None 会让"前进0"原样下传给 w.cmd，这里改为让调用方明确拒绝。"""
+    for base in _BATCHABLE:
         if inst.startswith(base):
             rest = inst[len(base):].strip()
             if rest.isdigit():
                 count = int(rest)
-                # C-3 修复：拒绝 count<1（前进0 之前会返回空响应让玩家误以为崩溃）
-                if count < 1:
-                    return None
-                return base, min(count, 20)  # 上限20步防死循环
+                return base, min(count, _BATCH_MAX)
     return None
 
 def _exec_single(w, instruction):
@@ -511,8 +645,16 @@ def _exec_single(w, instruction):
 def _exec_with_batch(w, instruction):
     """执行单条或批量指令（支持 "前进5"）。返回 (world, text)。"""
     batch = _parse_batch(instruction)
-    if batch:
+    if batch is not None:
         cmd_base, count = batch
+        if count < 1:
+            # ISSUE-17 修复：明确拒绝 count<1，不再把 "前进0" 原样下传
+            return w, f"?无效次数，拒绝执行: {instruction}"
+        note = ""
+        rest = instruction[len(cmd_base):].strip()
+        if rest.isdigit() and int(rest) > count:
+            # ISSUE-10 修复：声明批量截断，不再静默丢弃
+            note = f"?次数超限，已截断为{count}次（上限{_BATCH_MAX}）\n"
         texts = []
         for i in range(count):
             w, t = _exec_single(w, cmd_base)
@@ -534,26 +676,50 @@ def _exec_with_batch(w, instruction):
                 full_text += "\n" + texts[-1]
         else:
             full_text = "\n".join(texts)
-        return w, full_text
+        return w, note + full_text
     return _exec_single(w, instruction)
 
+class _CorruptSave:
+    """load_game 的损坏存档标记（ISSUE-5）。不是 None，避免上层把损坏当无档覆盖。"""
+    __slots__ = ()
+    def __repr__(self):
+        return "LOAD_CORRUPT"
+
+
+LOAD_CORRUPT = _CorruptSave()
+
+
 def load_game():
-    """从文件读存档。返回 state_dict 或 None。"""
+    """从文件读存档。三态可区分（ISSUE-5）：
+      state_dict   — 读取成功
+      None         — 无存档文件（LOAD_MISSING）
+      LOAD_CORRUPT — 存档损坏/不可读（已备份到 *.corrupt），不得当无档覆盖
+    """
     if not os.path.exists(_SAVE_FILE):
         return None
     try:
         with open(_SAVE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError, OSError):
-        return None
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"存档根节点类型错误: {type(data).__name__}")
+        return data
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError,
+            TypeError, IOError, OSError) as e:
+        # ISSUE-5 修复：捕获完整异常集（含 UnicodeDecodeError）；
+        # 损坏时备份并返回可区分标记，不再与无存档混为 None
+        backup = _SAVE_FILE + ".corrupt"
+        try:
+            os.replace(_SAVE_FILE, backup)
+            print(f"[WARN] 存档损坏已备份到 {backup}: {e}", file=sys.stderr)
+        except OSError as _e:
+            print(f"[WARN] 存档损坏且备份失败: {_e}（原错误: {e}）", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return LOAD_CORRUPT
+
 
 def save_game(state):
-    """存档到文件。"""
-    try:
-        with open(_SAVE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, separators=(',', ':'))
-    except Exception as _e:
-        import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
+    """存档到文件（原子写）。返回 True/False 显式状态（ISSUE-4）。"""
+    return _atomic_json_write(_SAVE_FILE, state)
 
 
 # ── 命令行入口 ──────────────────────────────────────
@@ -576,6 +742,10 @@ def main():
 
     # 读存档
     state = load_game()
+    if state is LOAD_CORRUPT:
+        # ISSUE-5：损坏≠无档——已备份，禁止自动开新局覆盖
+        print("存档损坏（已备份到 ciyuwu_save.json.corrupt）。已中止，避免覆盖。")
+        return
     if state is None:
         state, text = new_game()
         save_game(state)

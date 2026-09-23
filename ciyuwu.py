@@ -23,7 +23,7 @@
     python ciyuwu.py "前进"
     python ciyuwu.py "前进5"
 """
-import sys, os, io, json
+import sys, os, io
 
 if sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -31,7 +31,7 @@ if sys.stdout.encoding != 'utf-8':
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
-from engine import new_game as _ng, cmd as _cmd, load_game, save_game, _snapshot, _restore, _status_bar, _parse_batch, _ensure_init, _det_rng
+from engine import load_game, save_game, _snapshot, _restore, _status_bar, _parse_batch, _ensure_init, _det_rng
 
 _SAVE_FILE = os.path.join(_HERE, "ciyuwu_save.json")
 
@@ -71,6 +71,7 @@ class CiyuwuGame:
         batch = _parse_batch(instruction)
         if batch:
             cmd_base, count = batch
+            count = min(count, 20)  # 硬上限，防止批量次数失控
             texts = []
             for i in range(count):
                 t = w.cmd(cmd_base)
@@ -99,7 +100,10 @@ class CiyuwuGame:
         try:
             state = _snapshot(self._w)
             save_game(state)
-        except Exception as _e:            import sys; print(f"[WARN] {_e}", file=sys.stderr)
+            return True
+        except (OSError, TypeError, ValueError) as e:
+            print(f"[WARN] 自动存档失败: {e}", file=sys.stderr)
+            return False
 
     # ── 可读属性 ──
     @property
@@ -160,7 +164,7 @@ def cmd(instruction):
             _game = CiyuwuGame()
             _restore(_game._w, state)
         else:
-            return new_game()
+            return "没有存档，指令未执行。请先调用 new_game() 开新局。"
     return _game.cmd(instruction)
 
 
@@ -172,7 +176,7 @@ if __name__ == "__main__":
         print("  python ciyuwu.py new      — 开新局")
         print("  python ciyuwu.py 前进      — 继续")
         print("  python ciyuwu.py 前进5     — 连走5步")
-        sys.exit(0)
+        sys.exit(1)
 
     instruction = " ".join(sys.argv[1:]).strip()
 

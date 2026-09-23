@@ -47,7 +47,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from mcp.server import Server
-from mcp.types import Tool, TextContent
+from mcp.types import Tool, TextContent, CallToolResult
 
 from engine import new_game as _new_game, cmd as _cmd, _ensure_init, _status_bar
 
@@ -179,8 +179,8 @@ async def list_tools():
                     "session_id": {
                         # BUG-9 修复：暴露 session_id 参数，避免多用户互踩
                         "type": "string",
-                        "description": "可选。指定要操作的存档 ID（来自 new_game/play 返回值的 session 字段）。"
-                                       "不提供则使用最近活跃 session（多用户并发时不安全）。",
+                        "description": "指定要操作的存档 ID（来自 new_game/play 返回值的 session 字段）。"
+                                       "有进行中的存档时必填，不提供会被拒绝。",
                     },
                 },
                 "required": ["instruction"],
@@ -197,6 +197,14 @@ async def list_tools():
 @app.call_tool()
 async def call_tool(name, arguments):
     _init()
+    if arguments is None:
+        arguments = {}
+
+    def _err(msg):
+        return CallToolResult(
+            content=[TextContent(type="text", text=msg)],
+            isError=True,
+        )
 
     if name == "new_game":
         seed = arguments.get("seed")
@@ -219,11 +227,11 @@ async def call_tool(name, arguments):
         return [TextContent(type="text", text=output)]
 
     elif name == "play":
-        instruction = arguments.get("instruction", "").strip()
+        instruction = (arguments.get("instruction") or "").strip()
         # BUG-9 修复：可选 session_id 参数，避免多用户互踩
-        requested_sid = arguments.get("session_id", "").strip()
+        requested_sid = (arguments.get("session_id") or "").strip()
         if not instruction:
-            return [TextContent(type="text", text="空指令。试试'前进'、'攻'、'说 你好'。")]
+            return _err("空指令。试试'前进'、'攻'、'说 你好'。")
 
         with _lock:
             _cleanup_sessions()
@@ -232,21 +240,15 @@ async def call_tool(name, arguments):
                 latest_sid = requested_sid
                 state, _ = _sessions[latest_sid]
             elif requested_sid:
-                return [TextContent(type="text", text=f"指定的 session_id '{requested_sid}' 不存在。请用 new_game 开新局。")]
+                return _err(f"指定的 session_id '{requested_sid}' 不存在。请用 new_game 开新局。")
             elif _sessions:
-                # 多用户并发时不安全——打日志告警
-                if len(_sessions) > 1:
-                    import sys
-                    print(f"[WARN] MCP play: 多 session 并存({len(_sessions)}个)，"
-                          f"未指定 session_id，自动选中最近一个。可能误伤其他用户。",
-                          file=sys.stderr)
-                latest_sid = max(_sessions, key=lambda s: _sessions[s][1])
-                state, _ = _sessions[latest_sid]
+                return _err("未指定 session_id。有进行中的存档时必须显式传入 session_id，"
+                            "请使用 new_game/play 返回的 session 字段。")
             else:
                 state, text = _new_game()
                 session_id = uuid.uuid4().hex[:16]
                 _sessions[session_id] = (state, time.time())
-                return [TextContent(type="text", text=f"没有存档，已自动开新局。\n\n{_compact_text(text)}")]
+                return _err(f"没有存档，已自动开新局。\n\n{_compact_text(text)}\n\n[session:{session_id}]")
 
             new_state, output = _cmd(state, instruction)
 
@@ -398,7 +400,7 @@ def run_sse(port=8879):
     )
 
     print(f"词与物 MCP SSE Server → http://localhost:{port}/sse")
-    uvicorn.run(starlette_app, host="0.0.0.0", port=port)
+    uvicorn.run(starlette_app, host="127.0.0.1", port=port)
 
 
 if __name__ == "__main__":
