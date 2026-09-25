@@ -32,6 +32,7 @@
 import sys
 import os
 import io
+import asyncio
 import threading
 import time
 import uuid
@@ -49,7 +50,7 @@ if _HERE not in sys.path:
 from mcp.server import Server
 from mcp.types import Tool, TextContent, CallToolResult
 
-from engine import new_game as _new_game, cmd as _cmd, _ensure_init, _status_bar
+from engine import new_game as _new_game, cmd as _cmd, _ensure_init, _status_bar, _StateView
 
 app = Server("ciyuwu-game")
 
@@ -82,6 +83,10 @@ def _cleanup_sessions():
 def _compact_text(text):
     """压缩游戏输出——去掉指令提示行，保留叙事和重要交互提示。"""
     lines = text.split('\n')
+    # P1-18：engine 输出末行恒为状态栏 JSON（engine.cmd 拼接），本工具末尾
+    # 会统一追加 [status]，先剥掉避免同一状态两种格式重复下发
+    if lines and lines[-1].strip().startswith('{"phase"'):
+        lines = lines[:-1]
     result = []
     for line in lines:
         stripped = line.strip()
@@ -189,7 +194,21 @@ async def list_tools():
         Tool(
             name="status",
             description="查看当前游戏状态：生命、法力、顺从度、饥饿、词表+腔、遗刻、成就、任务等。不推进游戏。",
-            inputSchema={"type": "object", "properties": {}},
+            # P1-15：session_id / auto_new 补进 schema——原空 properties 让
+            # schema 驱动的客户端无法传这两个参数，auto_new 分支实际不可达
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "要查看的存档 ID（来自 new_game/play 返回值的 session 字段）。不填则取最近一个。",
+                    },
+                    "auto_new": {
+                        "type": "boolean",
+                        "description": "没有存档时是否自动开新局（默认 false，仅提示）。",
+                    },
+                },
+            },
         ),
     ]
 
@@ -210,7 +229,9 @@ async def call_tool(name, arguments):
         seed = arguments.get("seed")
         with _lock:
             _cleanup_sessions()
-            state, text = _new_game(seed=seed)
+        # P1-17：引擎调用含模块导入/读档/写档等阻塞 IO，放线程池执行，
+        # 不卡 SSE 模式共享的事件循环（锁只保护 _sessions）
+        state, text = await asyncio.to_thread(_new_game, seed=seed)
 
         session_id = uuid.uuid4().hex[:16]
         with _lock:
@@ -218,7 +239,9 @@ async def call_tool(name, arguments):
 
         output = _compact_text(text)
         # 加状态摘要
-        status = _status_bar(state)
+        # P0-α2：_new_game/_cmd 返回的是 _snapshot 纯 dict，_status_bar 内部
+        # 全是属性访问，直接传会 AttributeError——用 engine._StateView 包装
+        status = _status_bar(_StateView(state))
         if status:
             output += f"\n[{status}]"
         # BUG-9 修复：把 session_id 返回给客户端，供后续 play/status 使用
@@ -233,6 +256,7 @@ async def call_tool(name, arguments):
         if not instruction:
             return _err("空指令。试试'前进'、'攻'、'说 你好'。")
 
+        need_new = False
         with _lock:
             _cleanup_sessions()
             # 优先用显式指定的 session_id
@@ -245,18 +269,32 @@ async def call_tool(name, arguments):
                 return _err("未指定 session_id。有进行中的存档时必须显式传入 session_id，"
                             "请使用 new_game/play 返回的 session 字段。")
             else:
-                state, text = _new_game()
-                session_id = uuid.uuid4().hex[:16]
+                need_new = True
+
+        if need_new:
+            # P0-3：自动开新局是成功操作，正常返回——原版 isError=True 会被
+            # 客户端当失败反复重试，每次重试又开一局、堆积孤儿 session
+            state, text = await asyncio.to_thread(_new_game)
+            session_id = uuid.uuid4().hex[:16]
+            with _lock:
                 _sessions[session_id] = (state, time.time())
-                return _err(f"没有存档，已自动开新局。\n\n{_compact_text(text)}\n\n[session:{session_id}]")
+            out = _compact_text(text)
+            status = _status_bar(_StateView(state))
+            if status:
+                out += f"\n[{status}]"
+            out += f"\n\n[session:{session_id}]"
+            return [TextContent(type="text", text=f"没有存档，已自动开新局。\n\n{out}")]
 
-            new_state, output = _cmd(state, instruction)
+        # P1-17：引擎调用放线程池（含每条指令的 _save_meta 写盘 IO）
+        new_state, output = await asyncio.to_thread(_cmd, state, instruction)
 
-            # 更新session
+        # 更新session
+        with _lock:
             _sessions[latest_sid] = (new_state, time.time())
 
+        # P0-α2：new_state 是纯 dict，须包装后才能进 _status_bar
         compact = _compact_text(output)
-        status = _status_bar(new_state)
+        status = _status_bar(_StateView(new_state))
         if status:
             compact += f"\n[{status}]"
 
@@ -264,7 +302,8 @@ async def call_tool(name, arguments):
 
     elif name == "status":
         # BUG-13 修复：接受可选 session_id 参数，与 play 行为对称
-        requested_sid = arguments.get("session_id", "").strip() if arguments else ""
+        # P1-14：显式传 null 时 get 返回 None（默认值 '' 不生效），.strip() 会崩
+        requested_sid = (arguments.get("session_id") or "").strip() if arguments else ""
         with _lock:
             if requested_sid and requested_sid in _sessions:
                 latest_sid = requested_sid
@@ -273,7 +312,6 @@ async def call_tool(name, arguments):
                 return [TextContent(type="text", text=f"指定的 session_id '{requested_sid}' 不存在。用new_game开一局。")]
             elif _sessions:
                 if len(_sessions) > 1:
-                    import sys
                     print(f"[WARN] MCP status: 多 session 并存({len(_sessions)}个)，"
                           f"未指定 session_id，自动选中最近一个。", file=sys.stderr)
                 latest_sid = max(_sessions, key=lambda s: _sessions[s][1])
@@ -282,15 +320,19 @@ async def call_tool(name, arguments):
                 # BUG-13 修复：与 play 对称——提供"自动开新局"选项
                 choice = arguments.get("auto_new", False) if arguments else False
                 if choice:
-                    state, text = _new_game()
+                    state, text = await asyncio.to_thread(_new_game)
                     session_id = uuid.uuid4().hex[:16]
                     _sessions[session_id] = (state, time.time())
                     out = _compact_text(text) + f"\n\n[session:{session_id}]\n[自动开新局成功]"
                     return [TextContent(type="text", text=out)]
                 return [TextContent(type="text",
                     text="没有存档。用new_game开一局，或传 auto_new=true 自动开。")]
+            # P1-16：只读也要刷新访问时间——否则长时间只用 status 观察的
+            # 活跃会话会被 TTL 清理误删，之后 play 报 session 不存在
+            _sessions[latest_sid] = (state, time.time())
 
-        status = _status_bar(state)
+        # P0-α2：state 是纯 dict，须包装后才能进 _status_bar
+        status = _status_bar(_StateView(state))
 
         lines = [status]
         phase = state.get("phase", "")

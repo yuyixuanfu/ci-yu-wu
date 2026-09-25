@@ -261,5 +261,16 @@ bar = json.loads(t.strip().split("\n")[-1])
 check("ciyuwu批量", g.phase is not None and g.hp > 0)
 check("ciyuwu words", len(g.words) > 0)
 
+# ---- 白名单一致性（P1-40）：快照键集必须等于存档白名单 ----
+# 不一致意味着有字段会被 _restore 静默拒绝——存档丢字段后以默认值继续跑
+print("\n=== 白名单一致性 ===")
+from engine import _ensure_init, _ensure_whitelist, _snapshot
+from dark_engine import DarkWorld
+_ensure_init()
+snap_keys = set(_snapshot(DarkWorld()).keys()) - {"_combat", "_rng_state"}
+wl = set(_ensure_whitelist())
+check("快照键集==白名单", snap_keys == wl,
+      f"快照多出:{sorted(snap_keys - wl)} 白名单多出:{sorted(wl - snap_keys)}")
+
 print(f"\n=== 测试完成: PASS={PASS}, FAIL={FAIL} ===")
 sys.exit(1 if FAIL else 0)

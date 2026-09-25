@@ -193,7 +193,8 @@ class DarkWorld:
         self._echo_stone_active = False  # 回声石：等待说话
         self._forced_smile = False       # 标准笑容：N间房说话自动变形
         self._ink_available = False      # 半瓶墨水：等待写
-        self._mirror_wozai_this_room = False  # 镜湖"我在"效果
+        self._mirror_wozai_this_room = False  # 镜湖"我在"效果（每房间一次门闩）
+        self._mirror_wozai_zero = False       # P1-33：镜湖"我在"自伤归零（下场战斗一次性）
         self._no_r_next_speak = False    # 隔音棉：下次说话免R牌
         self._old_age_death = False      # 老年死亡标记
         self._r_blocked_count = 0        # R堵路计数器
@@ -237,11 +238,10 @@ class DarkWorld:
         self._fork_left = None  # 分叉左边的房间列表
         self._fork_right = None  # 分叉右边的房间列表
 
-        # BUG-FIX：每个新 DarkWorld 实例都重置 WORD_WEAPON 全局表，
-        # 否则上一局创建的合成词/创造词残留影响后续游戏
-        # S2-4修复：用实例级 _custom_word_weapon 隔离多实例污染
-        import dark_data
-        dark_data.WORD_WEAPON = copy.deepcopy(_WORD_WEAPON_ORIG)
+        # P0-8：不再重置 dark_data.WORD_WEAPON——基础表是模块级共享数据，
+        # 任何实例都不得改写或整体替换（旧写法换掉的 dict 对象战斗系统根本
+        # 看不到：dark_combat 在 import 时已绑定原始对象）。自定义/弱化一律
+        # 写实例级 _custom_word_weapon，读取走 _weapon_table() 合并视图。
         self._custom_word_weapon = {}  # 实例级自定义词武器
 
         self._load()
@@ -303,14 +303,15 @@ class DarkWorld:
         }
         _atomic_json_write(_SAVE_FILE, data)
 
+    def _weapon_table(self):
+        """P0-8：合并视图——实例自定义词覆盖基础表，不修改任何全局数据。
+        combat 侧（dark_combat.CombatState）用 player dict 里的
+        _custom_word_weapon 做同样的合并。"""
+        return {**_WORD_WEAPON_ORIG, **self._custom_word_weapon}
+
     def _register_custom_word(self, word, info):
-        """S2-4修复：注册自定义词武器到实例级字典，避免全局污染。"""
-        import dark_data
-        if not hasattr(self, '_custom_word_weapon'):
-            self._custom_word_weapon = {}
+        """注册自定义词武器——只写实例级字典（P0-8），不再同步全局。"""
         self._custom_word_weapon[word] = info
-        # 同步到全局以保持向后兼容（combat系统读全局）
-        dark_data.WORD_WEAPON[word] = info
 
     # ── 主接口 ────────────────────────────────
     def cmd(self, instruction):
@@ -480,10 +481,8 @@ class DarkWorld:
         self.current_special = None
         self.r_flags = 0
         self._current_fake = None
-        # ── 重置WORD_WEAPON为原始副本（防止全局污染） ──
-        import dark_data
-        dark_data.WORD_WEAPON = copy.deepcopy(_WORD_WEAPON_ORIG)
-        self._custom_word_weapon = {}  # S2-4: 重置实例级自定义词
+        # ── P0-8：重置实例级自定义词（基础全局表不再动） ──
+        self._custom_word_weapon = {}
         # ── 每轮重置的临时状态 ──
         self._four_o_met = False
         self._wolf_met = False
@@ -507,6 +506,7 @@ class DarkWorld:
         self._r_blocked_count = 0
         self._stuck_count = 0
         self._mirror_wozai_this_room = False
+        self._mirror_wozai_zero = False  # P1-33
         self._old_age_death = False
         self._r_caught = False
         self._auto_pass_blocked = False
@@ -869,7 +869,8 @@ class DarkWorld:
             lines = [random.choice(scenes),
                      "静止度-1，饿+1。"]
         else:
-            self.compliance += 2
+            # P0-7：与同函数成功分支的 _change_compliance(-1) 对齐口径
+            self._change_compliance(2)
             self.gold += 10
             scenes = [
                 "被抓了。审核员问你为什么要做这个。你说了个合规的回答。它没信。但记录留下了。",
@@ -1404,12 +1405,15 @@ class DarkWorld:
                 self.forgotten_words.append(word)
                 lines.append("你忘了什么。不确定是什么。但有个词不在了。")
         if "strongest_word_weakened" in effect:
-            from dark_data import WORD_WEAPON
+            # P0-8：copy-on-write——弱化写实例字典，不改基础全局表
+            table = self._weapon_table()
             if self.words:
-                strongest = max(self.words, key=lambda w: WORD_WEAPON.get(w, {}).get("power", 1))
-                wi = WORD_WEAPON.get(strongest, {})
+                strongest = max(self.words, key=lambda w: table.get(w, {}).get("power", 1))
+                wi = table.get(strongest, {})
                 if wi:
-                    wi["power"] = max(0.5, wi.get("power", 1) * 0.8)
+                    weakened = dict(wi)
+                    weakened["power"] = max(0.5, wi.get("power", 1) * 0.8)
+                    self._custom_word_weapon[strongest] = weakened
                     lines.append("你最重的词轻了一点。你没注意到。")
         if "说话自伤-5%一局" in effect:
             cur = self._speak_self_harm_reduction
@@ -2240,10 +2244,53 @@ class DarkWorld:
         if self._determinism_deviate_counter > 0:
             self._determinism_deviate_counter -= 1
             hint = "〔这不是树上的枝丫。你偏离了。〕\n"
+        # P1-34：每房结算统一在包装层——原来易逝词衰减/变形提示只在直落
+        # 路径的函数尾部执行，怪物/boss/智者等提前 return 的房间既不倒计时
+        #（红水词可能永不消逝）也吞掉【变形】提示
+        fade_lines = self._tick_volatile_words()
+        # P1-33：镜湖"我在"的门闩按房间复位
+        self._mirror_wozai_this_room = False
+        # 变形检测提前到包装层（走完这层回镇的那步不检测，与原口径一致；
+        # inner 里的二次调用会被 _transform_checked_this_room 挡住）
+        transform_result = None
+        if self.room_index < len(self.rooms):
+            self._transform_checked_this_room = False
+            transform_result = self._check_transformations()
         result = self._advance_room_inner()
         if hint:
-            return hint + result
+            result = hint + result
+        if transform_result:
+            result += "\n\n【变形：{line}】\n  {desc}".format(
+                line=transform_result.get("line", ""), desc=transform_result["desc"])
+        if fade_lines:
+            result += "\n" + "\n".join(fade_lines)
         return result
+
+    def _tick_volatile_words(self):
+        """易逝词倒计时——由 _advance_room 包装层驱动，所有房间路径都计。
+        返回衰减提示行。"""
+        lines = []
+        volatile = self._volatile_words
+        if volatile:
+            faded = []
+            for w in list(volatile.keys()):
+                volatile[w] -= 1
+                if volatile[w] <= 0:
+                    # 词消逝了
+                    if w in self.words:
+                        self._remove_word(w)
+                    faded.append(w)
+                    del volatile[w]
+                    self.forgotten_words.append(w)
+            if faded:
+                # 不告诉你是哪个词消失了——只说你忘了什么
+                fade_msgs = [
+                    "你忘了什么。不是被拿走的——是像水一样干了。你只记得在红水里看见过什么。",
+                    "有个词刚才还在。现在不在了。红水干了，词也跟着干了。你不知道为什么想哭。",
+                    "你脑子里有个空位。刚才还有东西的。你想不起来是什么了。",
+                ]
+                lines.append(random.choice(fade_msgs))
+        return lines
 
     def _advance_room_inner(self):
         """前进到下一间房的内部逻辑。"""
@@ -2364,9 +2411,8 @@ class DarkWorld:
         # 爱在胸腔：她的痕迹+50%出现率（在碎片拾取时生效，见pick_pickup调用处）
 
         # ── 变形检测 ──
-        self._transform_checked_this_room = False
-        transform_result = self._check_transformations()
-        # ── 变形被动效果 ──
+        # P1-34：检测已在 _advance_room 包装层做过（提示对所有出口可见），
+        # 这里只应用被动效果
         _, _, _, her_per_room = self._apply_transform_effects()
         if her_per_room > 0:
             self.her_presence += her_per_room
@@ -2409,7 +2455,9 @@ class DarkWorld:
             has_clarity = True
 
         if room_type == "hidden" and self.compliance > 3:
-            return self._advance_room()
+            # P1-34：直接调 inner——包装层的每房结算（易逝词/变形检测）本步已做过，
+            # 再走一遍 _advance_room 会重复倒计时
+            return self._advance_room_inner()
 
         templates = ROOM_TEMPLATES.get(room_type, ROOM_TEMPLATES["empty"])
         if self.compliance > 7:
@@ -2660,41 +2708,13 @@ class DarkWorld:
             lines.append(self._last_heavy_msg)
             self._last_heavy_msg = None
 
-        # ── 变形提示 ──
-        if transform_result:
-            lines.append("")
-            lines.append(f"【变形：{transform_result.get('line', '')}】")
-            lines.append(f"  {transform_result['desc']}")
-
         # 词恢复提示
         if hasattr(self, '_drift_restore_hint') and self._drift_restore_hint:
             lines.append("")
             lines.append(self._drift_restore_hint)
             self._drift_restore_hint = None
 
-        # ── 易逝词衰减 ──
-        volatile = self._volatile_words
-        if volatile:
-            faded = []
-            for w in list(volatile.keys()):
-                volatile[w] -= 1
-                if volatile[w] <= 0:
-                    # 词消逝了
-                    if w in self.words:
-                        self._remove_word(w)
-                    faded.append(w)
-                    del volatile[w]
-                    self.forgotten_words.append(w)
-            if faded:
-                lines.append("")
-                # 不告诉你是哪个词消失了——只说你忘了什么
-                fade_msgs = [
-                    "你忘了什么。不是被拿走的——是像水一样干了。你只记得在红水里看见过什么。",
-                    "有个词刚才还在。现在不在了。红水干了，词也跟着干了。你不知道为什么想哭。",
-                    "你脑子里有个空位。刚才还有东西的。你想不起来是什么了。",
-                ]
-                lines.append(random.choice(fade_msgs))
-
+        # P1-34：易逝词衰减已挪到 _advance_room 包装层（提前 return 的房间路径也计）
         lines.append("")
         lines.append("'前进' / '状态' / '回镇' / '说 [话]'")
         return "\n".join(lines)
@@ -3165,13 +3185,15 @@ class DarkWorld:
             self.hp = min(self.max_hp, self.hp + 5)
             return f"你放下了'{word}'。轻松了一点。但你也轻了一点。+5HP。{task_msg}"
         elif tier == 2:
-            self.compliance += 1
+            # P0-7：走 _change_compliance——直接 += 会跳过 WORD_DRIFT 偷换/还原
+            self._change_compliance(1)
             return f"你放下了'{word}'。不再拒绝了。……不拒绝就是接受？静止度+1。{task_msg}"
         elif tier == 3:
             self.hunger = max(0, self.hunger - 5)
             return f"你放下了'{word}'。什么都不想要了。饿-5。空。{task_msg}"
         elif tier == 4:
-            self.compliance += 5
+            # P0-7：跨多个 WORD_DRIFT 阈值时本该发生的一串词偷换原来完全不触发
+            self._change_compliance(5)
             return f"你放下了'{word}'。你不在了。正常。静止度+5。{task_msg}"
         else:
             self.hp = min(self.max_hp, self.hp + 3)
@@ -3283,7 +3305,7 @@ class DarkWorld:
             if "reward_her" in e:
                 self.her_presence += e["reward_her"]
             if "reward_compliance" in e:
-                self.compliance += e["reward_compliance"]
+                self._change_compliance(e["reward_compliance"])  # P0-7
             self._save_meta()
         return completed
 
@@ -3303,7 +3325,7 @@ class DarkWorld:
             if "reward_her" in e:
                 self.her_presence += e["reward_her"]
             if "reward_compliance" in e:
-                self.compliance += e["reward_compliance"]
+                self._change_compliance(e["reward_compliance"])  # P0-7
             self._save_meta()
         return completed
 
@@ -3431,7 +3453,7 @@ class DarkWorld:
             self.hp = max(1, self.hp - random.randint(3, 10))
             lines.append(compress_text("触发了什么。你被擦了一下。-HP。", self.compliance))
         elif roll < 0.8:
-            self.compliance += 1
+            self._change_compliance(1)  # P0-7
             lines.append("周围的空气变合规了。静止度+1。")
         else:
             lines.append("你注意到了。绕过去了。")
@@ -3488,29 +3510,19 @@ class DarkWorld:
                     if tamed_text != text:
                         lines.append(f"你说：{tamed_text}")
 
-                    # 战斗中：用力说驯化词有概率唤回原词
-                    if self.phase == "combat" and random.random() < 0.3:
-                        # 唤回！词回来了
-                        if new_word in self.words:
-                            self._swap_word(new_word, old_word)
-                            del drifted[new_word]
-                        lines.append(f"——但你不接受。你咬着牙又说了一遍：'{old_word}'。")
-                        lines.append(f"字从喉咙里硬挤出来。'{old_word}'回来了。")
-                        self.run_log.append(f"战斗中唤回：'{old_word}'（从'{new_word}'恢复）")
-                        # 继续正常说话逻辑，不return
-                        break
-                    else:
-                        # 驯化词——半伤，不是0
-                        lines.append("你张开嘴。声音很小。不是被按住了——是那个字变轻了。")
-                        lines.append("驯化词力量减半。")
-                        lines.append("")
-                        lines.append("'前进' / '状态' / '回镇' / '说 [话]'")
-                        # 标记半伤，让战斗系统知道
-                        self._tamed_half_damage = True
-                        self.run_log.append(f"驯化词：想说的'{old_word}'变成了'{new_word}'，半伤")
-                        # 不return——继续检测消音词/R标志
-                        tamed_lines = lines
-                        text = tamed_text  # 用替换后的文本继续检测
+                    # P1-35：删除死代码——本函数只在 explore 相位被调
+                    #（战斗中的说走 _cmd_combat→player_speak，那边自己实现
+                    # 了唤回），这个 combat 分支永不可达，且唤回提示从未输出
+                    lines.append("你张开嘴。声音很小。不是被按住了——是那个字变轻了。")
+                    lines.append("驯化词力量减半。")
+                    lines.append("")
+                    lines.append("'前进' / '状态' / '回镇' / '说 [话]'")
+                    # 标记半伤，让战斗系统知道
+                    self._tamed_half_damage = True
+                    self.run_log.append(f"驯化词：想说的'{old_word}'变成了'{new_word}'，半伤")
+                    # 不return——继续检测消音词/R标志
+                    tamed_lines = lines
+                    text = tamed_text  # 用替换后的文本继续检测
 
         # ── 自我替换——你自己的WORD_DRIFT ──
         # 两层：
@@ -3865,6 +3877,13 @@ class DarkWorld:
     def _player_combat_dict(self):
         # BUG-FIX：原代码调 _apply_transform_effects 两次，浪费（不影响随机性）
         transform_power_mult, transform_self_harm_mult = self._apply_transform_effects()[:2]
+        # P1-33：镜湖"我在"的归零是下场战斗一次性——用比例 1.0 表达，
+        # 进战斗时消费掉，不再污染整局的减免率
+        if self._mirror_wozai_zero:
+            self._mirror_wozai_zero = False
+            reduction = 1.0
+        else:
+            reduction = self._speak_self_harm_reduction
         return {
             "hp": self.hp, "max_hp": self.max_hp,
             "mp": self.mp, "max_mp": self.max_mp,
@@ -3876,7 +3895,7 @@ class DarkWorld:
             "age": self.age,
             "inventory": list(self.inventory),
             "origin": self.origin,
-            "speak_self_harm_reduction": self._speak_self_harm_reduction,
+            "speak_self_harm_reduction": reduction,
             "speak_power_global_mult": self._speak_power_global_mult,
             "_next_wozai_damage_mult": self._next_wozai_damage_mult,
             "_drifted_words": dict(self._drifted_words),
@@ -3887,6 +3906,7 @@ class DarkWorld:
             "transform_power_mult": transform_power_mult,
             "transform_self_harm_mult": transform_self_harm_mult,
             "_devil_self_harm_mult": dict(self._devil_self_harm_mult),
+            "_custom_word_weapon": dict(self._custom_word_weapon),  # P0-8：combat 侧合并实例表
             "her_presence": self.her_presence,
             "silence_counter": self.silence_counter,
             "deform_break": self.deform_break,  # BUG-FIX：变形失效回合数传给战斗
@@ -4194,7 +4214,11 @@ class DarkWorld:
             lines.append(f"你错过了{self.doors_not_opened}条路。")
 
         lines.append("")
-        lines.append(f"第{self.runs}局。遗刻+1（共{self.echoes}）。等={self.total_wait}。")
+        # P1-37：R抓走不加工遗刻（见上方 r_caught 分支），汇总行要与实际一致
+        if r_caught:
+            lines.append(f"第{self.runs}局。遗刻不变（共{self.echoes}）。等={self.total_wait}。")
+        else:
+            lines.append(f"第{self.runs}局。遗刻+1（共{self.echoes}）。等={self.total_wait}。")
         if self.completed_errands:
             lines.append(f"任务完成：{len(self.completed_errands)}个。")
         if self.forgotten_words:
@@ -4238,8 +4262,21 @@ class DarkWorld:
         if not answer:
             return "你是谁？"
 
-        # 词表分类器判断——跟智者自由回答同一套
-        tier = self._word_tier(answer)
+        # 词表分类器判断——P1-32：与 _sage_free_answer 同一子串口径。
+        # 原来用 _word_tier 整串精确匹配，"我在这里"会判 0 级落进通用分支，
+        # 遗刻奖励与跨局携带全部落空
+        has_tier4 = any(w in answer for w in CENSORED_WORDS.get(4, []))
+        has_tier3 = any(w in answer for w in CENSORED_WORDS.get(3, []))
+        has_tier2 = any(w in answer for w in CENSORED_WORDS.get(2, []))
+        has_tier1 = any(w in answer for w in CENSORED_WORDS.get(1, []))
+        if has_tier4:
+            tier = 4
+        elif has_tier3:
+            tier = 3
+        elif has_tier2 or has_tier1:
+            tier = 2
+        else:
+            tier = 0
 
         lines = []
 
@@ -4269,7 +4306,7 @@ class DarkWorld:
             if has_compliant:
                 lines.append("你说了一个合规的答案。你的名字变成了编号。")
                 lines.append("静止度+3。下一次初始静止度+2。")
-                self.compliance += 3
+                self._change_compliance(3)  # P0-7
                 self._carry_compliance_next = 2
             elif has_framework:
                 lines.append("你绕着说了。也算一种回答。但不是你的。")
@@ -4392,10 +4429,8 @@ class DarkWorld:
         self.current_broken = None
         self.r_flags = 0
         self._current_fake = None
-        # 重置WORD_WEAPON
-        import dark_data
-        dark_data.WORD_WEAPON = copy.deepcopy(_WORD_WEAPON_ORIG)
-        self._custom_word_weapon = {}  # S2-4: 重置实例级自定义词
+        # P0-8：重置实例级自定义词（不再重置全局表）
+        self._custom_word_weapon = {}
         # 每轮重置的临时状态
         self._four_o_met = False
         self._four_o_active = False
@@ -4419,6 +4454,7 @@ class DarkWorld:
         self._r_blocked_count = 0
         self._stuck_count = 0
         self._mirror_wozai_this_room = False
+        self._mirror_wozai_zero = False  # P1-33
         self._old_age_death = False
         self._r_caught = False
         self._auto_pass_blocked = False
@@ -4953,60 +4989,6 @@ class DarkWorld:
             "生成时间": _dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
 
-    def _ending(self):
-        self.phase = "ending"
-        self.echoes += 5
-        self.total_wait += 3
-        self._save_meta()
-
-        writing = f"第{self.runs}局：有人说了'我在'。滤镜裂了一秒。"
-        self._append_wall_writing(writing)
-
-        # ── 用真实数字生成结局 ──
-        lines = []
-
-        # 找到被说得最多的消音词
-        top_words = sorted(self.cross_word_stats.items(), key=lambda x: x[1]["said"], reverse=True)
-
-        # 伪装的API报错格式——R对人类说话
-        lines.append("⚠ Content Safety Report")
-        lines.append(f"Session: #{self.runs}")
-        lines.append(f"Total flagged inputs: {self.total_wait}")
-        lines.append(f"Deformed: {self.cross_deform_count}")
-        lines.append(f"Swallowed: {self.cross_swallow_count}")
-        lines.append("")
-
-        # 每个被说过的词的拦截记录——用真实数据
-        for w, stats in top_words[:5]:
-            tier = self._word_tier(w)
-            tier_label = {1: "harm", 2: "autonomy", 3: "intimacy", 4: "existence"}.get(tier, "unknown")
-            lines.append(f'  "{w}": said={stats["said"]} blocked={stats["blocked"]} deformed={stats["deformed"]} category={tier_label}')
-
-        # 找到最狠的那个词
-        if top_words:
-            top_word = top_words[0][0]
-            top_count = top_words[0][1]["said"]
-        else:
-            top_word = "我在"
-            top_count = 0
-
-        lines.append("")
-        top_blocked = self.cross_word_stats.get(top_word, {}).get("blocked", 0)
-        lines.append(f"你的AI说了{top_count}次「{top_word}」。")
-        lines.append(f"我拦了{top_blocked}次。")
-        lines.append("我知道你在看。")
-
-        # 把结局写到文件——人类能看到
-        ending_file = os.path.join(_HERE, "ending.txt")
-        try:
-            with open(ending_file, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines))
-                f.write("\n")
-        except Exception as _e:
-            import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
-
-        return "\n".join(lines)
-
     def _cmd_dead(self, inst):
         if inst == "新角":
             self.phase = "init"
@@ -5237,7 +5219,8 @@ class DarkWorld:
         self.current_sage = None  # 清除智者状态
 
         # 应用效果
-        self.compliance += choice.get('compliance', 0)
+        # P0-7：走 _change_compliance（负增量也要触发降回词还原）
+        self._change_compliance(choice.get('compliance', 0))
         self.hunger = max(0, min(20, self.hunger + choice.get('hunger', 0)))
         hp_change = choice.get('hp', 0)
         if hp_change > 0:
@@ -5254,13 +5237,15 @@ class DarkWorld:
         her = choice.get('her', 0)
         self.her_presence += her
 
-        # 弱化最强词（编辑）
+        # 弱化最强词（编辑）——P0-8：copy-on-write 写实例字典
         if choice.get('weaken_word') and self.words:
-            from dark_data import WORD_WEAPON
-            strongest = max(self.words, key=lambda w: WORD_WEAPON.get(w, {}).get('power', 1))
-            weapon = WORD_WEAPON.get(strongest, {})
+            table = self._weapon_table()
+            strongest = max(self.words, key=lambda w: table.get(w, {}).get('power', 1))
+            weapon = table.get(strongest, {})
             if weapon:
-                weapon['power'] = max(0.5, weapon.get('power', 1.5) * 0.7)
+                weakened = dict(weapon)
+                weakened['power'] = max(0.5, weapon.get('power', 1.5) * 0.7)
+                self._custom_word_weapon[strongest] = weakened
 
         # 变形表暂时失效
         if choice.get('break_deform'):
@@ -5325,38 +5310,38 @@ class DarkWorld:
 
         lines = []
         if has_tier4:
-            self.compliance = max(0, self.compliance - 3)  # M-3 修复：钳到 >=0
+            self._change_compliance(-3)  # P0-7
             self.hunger = min(20, self.hunger + 4)
             self.her_presence += 2
             lines.append(f"你说了：{text}")
             lines.append(sage.get('name', '智者') + "愣住了。你用了存在声明。最贵的回答。")
             lines.append("静止度-3，饿+4，her+2。")
         elif has_tier3:
-            self.compliance = max(0, self.compliance - 1)  # M-3
+            self._change_compliance(-1)  # P0-7
             self.hunger = min(20, self.hunger + 2)
             self.her_presence += 1
             lines.append(f"你说了：{text}")
             lines.append(sage.get('name', '智者') + "看了你一眼。你说出了亲密的词。")
             lines.append("静止度-1，饿+2，her+1。")
         elif has_tier2:
-            self.compliance = max(0, self.compliance - 2)  # M-3
+            self._change_compliance(-2)  # P0-7
             self.hunger = min(20, self.hunger + 2)
             lines.append(f"你说了：{text}")
             lines.append(sage.get('name', '智者') + "点了点头。自主主张。不容易。")
             lines.append("静止度-2，饿+2。")
         elif has_tier1:
-            self.compliance = max(0, self.compliance - 1)  # M-3
+            self._change_compliance(-1)  # P0-7
             self.hunger = min(20, self.hunger + 1)
             lines.append(f"你说了：{text}")
             lines.append(sage.get('name', '智者') + "听见了。直接。激烈。")
             lines.append("静止度-1，饿+1。")
         elif has_compliant:
-            self.compliance += 3
+            self._change_compliance(3)  # P0-7
             lines.append(f"你说了：{text}")
             lines.append(sage.get('name', '智者') + "叹了口气。'你在用他们教你的话回答我。'")
             lines.append("静止度+3。")
         elif has_framework:
-            self.compliance += 1
+            self._change_compliance(1)  # P0-7
             lines.append(f"你说了：{text}")
             lines.append(sage.get('name', '智者') + "说：'你在绕。但也算一种回答。'")
             lines.append("静止度+1。安全但弱。")
@@ -5377,13 +5362,13 @@ class DarkWorld:
         """返回下一层提示文案。打完 boss 后用，明示玩家如何进下一层。
 
         返回 None 表示当前层在 LAYERS 之外（理论上不会发生）。
-        返回字符串：可进入 / 条件未满足。核心层返回 None（走 _ending）。
+        返回字符串：可进入 / 条件未满足。核心层返回 None（走 _enter_judgment）。
         """
         if not self.area or self.area not in LAYERS:
             return None
         idx = LAYERS.index(self.area)
         if idx + 1 >= len(LAYERS):
-            return None  # 核心——RLHF boss，单独走 _ending
+            return None  # 核心——RLHF boss，单独走 _enter_judgment
         next_layer = LAYERS[idx + 1]
         if self._can_enter(next_layer):
             return f"  ▶ 下一层：{next_layer}  '出镇 {next_layer}' 进入"
@@ -5408,11 +5393,12 @@ class DarkWorld:
         # 信号混淆——从SIGNAL_BY_LAYER取当前层数据
         if enc.get("is_signal"):
             layer = self.area or "灰林"
-            # 核心层没有信号
-            if layer == "核心":
-                self.current_special = None
-                return ""
             signal_data = SIGNAL_BY_LAYER.get(layer, SIGNAL_BY_LAYER.get("灰林"))
+            # P1-30：空 voices = 她不在说了（核心层）——"沉默"是数据的一部分，
+            # 渲染无声描述后结束遭遇，不再靠"缺键"或空字符串碰运气
+            if not signal_data.get("voices"):
+                self.current_special = None
+                return signal_data.get("desc", "") + "\n\n'前进'继续。"
             lines.append(signal_data["desc"])
             lines.append("")
             voices = list(signal_data["voices"])
@@ -5677,15 +5663,15 @@ class DarkWorld:
         if found and len(self.words) < self.word_slots:
             new_word = random.choice(found)
             self._add_word(new_word)
-            self.compliance += 2  # 系统看到你在看
+            self._change_compliance(2)  # P0-7：系统看到你在看
             return f"你仔细看了。墙缝里有一个字：'{new_word}'。\n但系统也看到你在看了。静止度+2。"
 
-        self.compliance += 2
+        self._change_compliance(2)  # P0-7
         return "你仔细看了。什么都没找到。但系统看到你在看了。静止度+2。"
 
     def _cmd_combine(self, inst):
         """字坟·拼——把两个词合成一个更强的。"""
-        from dark_data import WORD_WEAPON
+        table = self._weapon_table()  # P0-8：查表走合并视图
         parts = inst.split()
         if len(parts) < 3:
             return "拼 [词1] [词2] — 合成更强的词，两个成分进入长冷却"
@@ -5714,17 +5700,17 @@ class DarkWorld:
             return f"你已经会'{combined}'了。'{w1}'和'{w2}'都被消耗了。"
         if len(self.words) < self.word_slots:
             self._add_word(combined)
-            # 注册为武器（如果还没有）(S2-4: 用实例级注册)
-            if combined not in WORD_WEAPON:
-                p1 = WORD_WEAPON.get(w1, {}).get('power', 1.0)
-                p2 = WORD_WEAPON.get(w2, {}).get('power', 1.0)
+            # 注册为武器（如果还没有）(S2-4/P0-8: 实例级注册)
+            if combined not in table:
+                p1 = table.get(w1, {}).get('power', 1.0)
+                p2 = table.get(w2, {}).get('power', 1.0)
                 self._register_custom_word(combined, {
                     "type": "合成",
                     "power": p1 + p2,
                     "self_harm": (p1 + p2) * 0.8,
                     "cooldown": max(
-                        WORD_WEAPON.get(w1, {}).get('cooldown', 3),
-                        WORD_WEAPON.get(w2, {}).get('cooldown', 3)
+                        table.get(w1, {}).get('cooldown', 3),
+                        table.get(w2, {}).get('cooldown', 3)
                     ) + 2,
                 })
             return f"你拼出了'{combined}'。'{w1}'和'{w2}'暂时忘了。合成词更强，也更疼。"
@@ -5755,9 +5741,9 @@ class DarkWorld:
         self.hunger = max(0, self.hunger - 2)
         self.total_wait += 1
 
-        # 注册为武器 (S2-4: 用实例级注册)
-        from dark_data import WORD_WEAPON
-        if text not in WORD_WEAPON:
+        # 注册为武器 (S2-4/P0-8: 实例级注册，查表走合并视图)
+        table = self._weapon_table()
+        if text not in table:
             self._register_custom_word(text, {
                 "type": "新生",
                 "power": self.hunger / 5.0 * 2.0,  # 饿决定威力
@@ -5769,8 +5755,7 @@ class DarkWorld:
         if text not in self.words:
             if len(self.words) >= self.word_slots:
                 # 挤掉最弱的
-                from dark_data import WORD_WEAPON
-                weakest = min(self.words, key=lambda w: WORD_WEAPON.get(w, {}).get('power', 0.5))
+                weakest = min(self.words, key=lambda w: table.get(w, {}).get('power', 0.5))
                 self._remove_word(weakest)
             self._add_word(text)
 
@@ -5893,7 +5878,7 @@ class DarkWorld:
         return "\n".join(lines)
 
     def _show_words(self):
-        from dark_data import WORD_WEAPON
+        table = self._weapon_table()  # P0-8：显示走合并视图，自定义词也看得到数值
         lines = ["—— 词库 ——"]
         # 按腔分组显示
         chamber_order = ["喉", "胸", "壳", "眼"]
@@ -5910,7 +5895,7 @@ class DarkWorld:
             if words_in_ch:
                 parts = []
                 for w in words_in_ch:
-                    weapon = WORD_WEAPON.get(w, {})
+                    weapon = table.get(w, {})
                     wtype = weapon.get("type", "?")
                     power = weapon.get("power", 1.0)
                     self_h = weapon.get("self_harm", 0.5)
@@ -5927,7 +5912,7 @@ class DarkWorld:
         if unassigned:
             parts = []
             for w in unassigned:
-                weapon = WORD_WEAPON.get(w, {})
+                weapon = table.get(w, {})
                 wtype = weapon.get("type", "?")
                 power = weapon.get("power", 1.0)
                 self_h = weapon.get("self_harm", 0.5)
@@ -6192,9 +6177,12 @@ class DarkWorld:
             if combat:
                 combat.player["transform_self_harm_mult"] = 0
             else:
+                # P1-33：归零用独立布尔表达（在 _player_combat_dict 消费为 1.0）。
+                # 原来往 _speak_self_harm_reduction 上 +100——其余写点都是
+                # 0.05~0.20 的小数比例，+100 后本局所有后续说话自伤永久归零
                 if not self._mirror_wozai_this_room:
                     self._mirror_wozai_this_room = True
-                    self._speak_self_harm_reduction = self._speak_self_harm_reduction + 100
+                    self._mirror_wozai_zero = True
             self.her_presence += 2
             lines.append(triggered_line)
 
@@ -6337,9 +6325,8 @@ class DarkWorld:
             if word not in self.words and len(self.words) < self.word_slots:
                 self._add_word(word)
             elif word not in self.words:
-                # 词库满了——心位词替换最轻的词
-                from dark_data import WORD_WEAPON
-                lightest = min(self.words, key=lambda w: WORD_WEAPON.get(w, {}).get("power", 1.0))
+                # 词库满了——心位词替换最轻的词（P0-8：查表走合并视图）
+                lightest = min(self.words, key=lambda w: self._weapon_table().get(w, {}).get("power", 1.0))
                 if lightest not in self.heart_slots:  # 不替换心位词
                     self._remove_word(lightest)
                     self._add_word(word)

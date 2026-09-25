@@ -34,31 +34,36 @@ _SAVE_FILE = os.path.join(_HERE, "ciyuwu_save.json")
 import threading as _threading
 _atomic_write_lock = _threading.Lock()
 
+def _atomic_json_write_unlocked(path, data):
+    """无锁版原子写——供已持 _atomic_write_lock 的调用方复用（P0-10：
+    读-合并-写必须整体在一个临界区内完成，持锁后再进带锁版本会自死锁）。
+    临时名带 pid+线程id：进程内锁挡不住多进程，同名 .tmp 会被互相截断。"""
+    tmp = f"{path}.{os.getpid()}.{_threading.get_ident()}.tmp"
+    ok = False
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, allow_nan=False)
+        os.replace(tmp, path)
+        ok = True
+    except Exception as e:
+        print(f"[WARN] _atomic_json_write 失败 {path}: {e}", file=sys.stderr)
+    finally:
+        # F-3 修复：清理残留 .tmp（rename 成功后 tmp 已不存在；这里只处理失败情况）
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception as _e:
+            print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
+    return ok
+
 def _atomic_json_write(path, data):
     """原子 JSON 写入：写 .tmp 后 rename。失败时清理残留 .tmp 文件。
     F-3 修复：原版 except: pass 会留下 .tmp 永久残留，现在用 finally 清理。
     ST-2 修复：进程内线程锁防止并发 .tmp 冲突。
     返回 True/False 显式状态（ISSUE-4）；allow_nan=False 禁写非法 JSON（ISSUE-15）。
     """
-    tmp = path + ".tmp"
-    ok = False
     with _atomic_write_lock:
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2, allow_nan=False)
-            os.replace(tmp, path)
-            ok = True
-        except Exception as e:
-            import sys
-            print(f"[WARN] _atomic_json_write 失败 {path}: {e}", file=sys.stderr)
-        finally:
-            # F-3 修复：清理残留 .tmp（rename 成功后 tmp 已不存在；这里只处理失败情况）
-            try:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
-            except Exception as _e:
-                import sys; print(f"[WARN] {_e}", file=sys.stderr); traceback.print_exc(file=sys.stderr)
-    return ok
+        return _atomic_json_write_unlocked(path, data)
 
 # ── 确定性PRNG ──────────────────────────────────────
 def _mulberry32(seed):
@@ -169,35 +174,38 @@ _META_ATTRS = {"tavern_regular_visits": "_tavern_regular_visits"}
 def _merge_save_meta(self):
     """ISSUE-3 修复：meta 写入并入已有全量快照——只更新 _META_KEYS，
     其余键原样保留。禁止用 14 个 meta 键覆盖 save_game() 写入的全量快照。
-    由 _ensure_init 挂到 DarkWorld._save_meta，覆盖其全部调用点。"""
+    由 _ensure_init 挂到 DarkWorld._save_meta，覆盖其全部调用点。
+    P0-10 修复：读-合并-写整体持 _atomic_write_lock——原来只有写入阶段
+    被锁住，两线程交错时后写者会用旧基线的合并结果整文件覆盖先写者的进度。"""
     data = {}
     for k in _META_KEYS:
         attr = _META_ATTRS.get(k, k)
         if hasattr(self, attr):
             data[k] = getattr(self, attr)
-    existing = {}
-    if os.path.exists(_SAVE_FILE):
-        try:
-            with open(_SAVE_FILE, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-            if not isinstance(existing, dict):
-                existing = {}
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError,
-                TypeError, IOError, OSError) as e:
-            # 旧档损坏：先备份再写 meta，不静默丢弃
-            backup = _SAVE_FILE + ".corrupt"
+    with _atomic_write_lock:
+        existing = {}
+        if os.path.exists(_SAVE_FILE):
             try:
-                os.replace(_SAVE_FILE, backup)
-                print(f"[WARN] meta合并前存档损坏，已备份到 {backup}: {e}", file=sys.stderr)
-            except OSError as _e:
-                print(f"[WARN] meta合并前存档损坏且备份失败: {_e}", file=sys.stderr)
-            existing = {}
-    old_runs = existing.get("runs") if isinstance(existing, dict) else None
-    existing.update(data)
-    # runs 取 max：指定 seed 的可复现局会把局数归零（见 new_game），不能因此丢生涯计数
-    if isinstance(old_runs, int) and isinstance(data.get("runs"), int):
-        existing["runs"] = max(old_runs, data["runs"])
-    _atomic_json_write(_SAVE_FILE, existing)
+                with open(_SAVE_FILE, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+                if not isinstance(existing, dict):
+                    existing = {}
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError,
+                    TypeError, IOError, OSError) as e:
+                # 旧档损坏：先备份再写 meta，不静默丢弃
+                backup = _SAVE_FILE + ".corrupt"
+                try:
+                    os.replace(_SAVE_FILE, backup)
+                    print(f"[WARN] meta合并前存档损坏，已备份到 {backup}: {e}", file=sys.stderr)
+                except OSError as _e:
+                    print(f"[WARN] meta合并前存档损坏且备份失败: {_e}", file=sys.stderr)
+                existing = {}
+        old_runs = existing.get("runs") if isinstance(existing, dict) else None
+        existing.update(data)
+        # runs 取 max：指定 seed 的可复现局会把局数归零（见 new_game），不能因此丢生涯计数
+        if isinstance(old_runs, int) and isinstance(data.get("runs"), int):
+            existing["runs"] = max(old_runs, data["runs"])
+        return _atomic_json_write_unlocked(_SAVE_FILE, existing)
 
 
 # ── 快照 ────────────────────────────────────────────
@@ -244,32 +252,47 @@ def _to_jsonable(obj, _seen=None):
         if key in _seen:
             return {'__t': 'ref', 'id': id(obj)}
         _seen.add(key)
-        return {k: _to_jsonable(v, _seen) for k, v in obj.items()}
+        result = {k: _to_jsonable(v, _seen) for k, v in obj.items()}
+        # P1-38：递归返回后回溯删除——_seen 只该含"当前递归路径上的祖先"。
+        # 不删会把同一容器在本属性内的第二次出现（浅拷贝构造的共享引用）
+        # 误判成循环，还原成 None 丢数据
+        _seen.discard(key)
+        return result
     if isinstance(obj, (list, tuple)):
         key = (id(obj), type(obj))
         if key in _seen:
             return {'__t': 'ref', 'id': id(obj)}
         _seen.add(key)
-        return [_to_jsonable(x, _seen) for x in obj]
+        result = [_to_jsonable(x, _seen) for x in obj]
+        _seen.discard(key)
+        return result
     # BUG-19 修复：dataclass 等自定义对象走 __dict__ 兜底，避免静默丢失
     if hasattr(obj, '__dict__') and not isinstance(obj, type):
         key = (id(obj), type(obj))
         if key in _seen:
             return {'__t': 'ref', 'id': id(obj)}
         _seen.add(key)
-        return {'__t': 'obj', 'cls': type(obj).__name__,
-                'v': _to_jsonable(obj.__dict__, _seen)}
+        result = {'__t': 'obj', 'cls': type(obj).__name__,
+                  'v': _to_jsonable(obj.__dict__, _seen)}
+        _seen.discard(key)
+        return result
     return obj
+
+# P0-9：快照占位标记的还原哨兵。'__t':'obj'/'unserializable' 的原始对象
+# 无法从 dict 重建，返回它让 _restore 跳过并告警，不再把占位 dict 当合法值写入
+_UNRESTORABLE = object()
 
 def _from_jsonable(obj):
     if isinstance(obj, dict):
         if obj.get('__t') == 'set':
             return set(_from_jsonable(x) for x in obj.get('v', []))
         if obj.get('__t') == 'obj':
-            # BUG-19 修复：保留 dataclass 字段（由上层 _restore 决定如何还原）
-            return obj
+            # BUG-19 的占位只有排查价值，没有还原价值（P0-9）
+            return _UNRESTORABLE
         if obj.get('__t') == 'ref':
             return None  # 循环引用回退——上层自行处理
+        if obj.get('__t') == 'unserializable':
+            return _UNRESTORABLE
         return {k: _from_jsonable(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_from_jsonable(x) for x in obj]
@@ -345,14 +368,28 @@ def _restore(w, state):
             rejected.append(attr)
             continue
         try:
-            setattr(w, attr, _from_jsonable(val))
+            restored = _from_jsonable(val)
+        except Exception as e:
+            import sys
+            print(f"[WARN] _restore 跳过 {attr}: {e}", file=sys.stderr)
+            rejected.append(attr)
+            continue
+        if restored is _UNRESTORABLE:
+            # P0-9：占位标记不能当合法值 setattr——走 rejected 通道留痕
+            import sys
+            print(f"[WARN] _restore: {attr} 含不可还原对象，跳过该字段", file=sys.stderr)
+            rejected.append(attr)
+            continue
+        try:
+            setattr(w, attr, restored)
         except Exception as e:
             import sys
             print(f"[WARN] _restore 跳过 {attr}: {e}", file=sys.stderr)
             rejected.append(attr)
     if rejected:
+        # P1-40：拒绝时打印具体字段名——只报数量时，丢什么字段无从排查
         import sys
-        print(f"[WARN] _restore 拒绝 {len(rejected)} 个非白名单字段", file=sys.stderr)
+        print(f"[WARN] _restore 拒绝 {len(rejected)} 个字段: {', '.join(sorted(rejected))}", file=sys.stderr)
     # 恢复combat
     if combat_data:
         from dark_combat import CombatState
@@ -692,7 +729,7 @@ LOAD_CORRUPT = _CorruptSave()
 def load_game():
     """从文件读存档。三态可区分（ISSUE-5）：
       state_dict   — 读取成功
-      None         — 无存档文件（LOAD_MISSING）
+      None         — 无存档文件
       LOAD_CORRUPT — 存档损坏/不可读（已备份到 *.corrupt），不得当无档覆盖
     """
     if not os.path.exists(_SAVE_FILE):
@@ -736,8 +773,11 @@ def main():
 
     if instruction.lower() in ("new", "新局", "new_game"):
         state, text = new_game()
-        save_game(state)
         print(text)
+        if not save_game(state):
+            # P1-39：写盘失败必须让调用方知道，否则静默回档
+            print("存档失败！本局进度未保存。")
+            sys.exit(1)
         return
 
     # 读存档
@@ -748,15 +788,19 @@ def main():
         return
     if state is None:
         state, text = new_game()
-        save_game(state)
         print(text)
+        if not save_game(state):
+            print("存档失败！本局进度未保存。")
+            sys.exit(1)
         print("\n（自动开新局。输入 python engine.py \"新角\" 开始。）")
         return
 
     # 执行
     new_state, text = cmd(state, instruction)
-    save_game(new_state)
     print(text)
+    if not save_game(new_state):
+        print("存档失败！本次进度未保存，下次将从上一个存档点继续。")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

@@ -1340,7 +1340,10 @@ def pick_fragment():
     return random.choice(FRAGMENTS)
 
 def pick_potion():
-    return random.choice(POTION_POOL)
+    # P1-31：与 pick_pickup 的既有约定对齐——返回浅拷贝。原版返回
+    # POTION_POOL 的活引用，调用方一旦就地改 value/effect 会永久改写
+    # 模块级词条池，服务端多局/多会话下跨局串状态
+    return dict(random.choice(POTION_POOL))
 
 # ── 残句——每层不同的解谜 ──────────────────────────────────
 BROKEN_SENTENCES = {
@@ -1760,7 +1763,13 @@ SIGNAL_BY_LAYER = {
             {"text": "不用听了", "is_her": False, "on_wrong": "你不想听了。安静也挺好的。也许她本来就不在。", "on_wrong_effect": "compliance+3"},
         ],
     },
-    # 核心：没声了。她不在说了。你还得说吗？
+    # P1-30：核心必须显式存在——原来故意不含此键（"她不在说了"），但消费端
+    # .get(layer, .get("灰林")) 会把"缺键"回退成灰林，玩家在最深处反而听到
+    # 最清晰的信号。把"沉默"表达为数据：空 voices = 她不在说了
+    "核心": {
+        "desc": "没有声音。连0.7秒的频率都没有。不是听不到——是她不在说了。",
+        "voices": [],
+    },
 }
 
 # ── 特别遭遇——不是任务，是能改变游戏的瞬间 ──────────────────

@@ -32,7 +32,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
 from flask import Flask, request, jsonify
-from engine import new_game as _new_game, cmd as _cmd, _ensure_init, _atomic_json_write, _SAVE_FILE
+from engine import (new_game as _new_game, cmd as _cmd, _ensure_init,
+                    _atomic_json_write, _SAVE_FILE,
+                    _META_KEYS as _ENGINE_META_KEYS, _META_ATTRS as _ENGINE_META_ATTRS)
 
 app = Flask(__name__)
 _lock = threading.Lock()
@@ -52,36 +54,60 @@ if os.path.exists(_old_meta) and not os.path.exists(_META_FILE):
     try:
         os.rename(_old_meta, _META_FILE)
     except Exception as _e:        import sys; print(f"[WARN] {_e}", file=sys.stderr)
-_META_KEYS = ["echoes", "runs", "echo_map", "killed_bosses",
-              "unlocked_origins", "wall_writings", "total_wait",
-              "unlocked_achievements", "heart_slots",
-              "cross_word_stats", "game_diary",
-              "cross_deform_count", "cross_swallow_count"]
+# P1-24：不手抄 meta 键清单——从 engine 导入。快照里的键是实例属性名
+# （如酒馆常客计数是 _tavern_regular_visits），经 _META_ATTRS 映射，
+# 手抄清单已漂移漏掉该键，导致跨 session 合并对它完全失效
+_META_KEYS = [_ENGINE_META_ATTRS.get(k, k) for k in _ENGINE_META_KEYS]
 
-def _load_meta():
-    """从磁盘读meta进度。读失败返回 None（调用方必须停止写回，避免丢档）。"""
+def _read_meta_nolock():
+    """无锁读meta——仅供已持 _meta_lock 的 _load_meta/_update_meta 使用。
+    （同进程对新 fd 再取锁会自死锁，所以持锁方必须走无锁内层。）"""
     if not os.path.exists(_META_FILE):
         return {}
     try:
-        # BUG-14 修复：跨进程读也加锁，避免读到半写的 .tmp 文件
-        with _meta_lock("r"):
-            with open(_META_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except (json.JSONDecodeError, IOError, OSError) as e:
-        # BUG-FIX：只吞 JSON/IO 错误，别吞掉所有异常（隐藏 bug）
-        import sys
-        print(f"[WARN] _load_meta 失败: {type(e).__name__}: {e}", file=sys.stderr)
+        with open(_META_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # P1-21：根节点非 dict（如 [...]）原样返回会让 _merge_meta 崩 500，
+        # 与 engine._merge_save_meta 的 isinstance 校验对齐，按损坏处理
+        if not isinstance(data, dict):
+            print(f"[WARN] _read_meta_nolock: {_META_FILE} 根节点不是对象", file=sys.stderr)
+            return None
+        return data
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError,
+            TypeError, IOError, OSError) as e:
+        # P1-21：补 UnicodeDecodeError——存档含非法字节时旧版直接穿透成 500
+        print(f"[WARN] _read_meta_nolock 失败: {type(e).__name__}: {e}", file=sys.stderr)
         return None
 
-def _save_meta(meta):
-    """把meta进度写到磁盘（原子写 + 跨进程文件锁）。"""
+def _write_meta_nolock(meta):
+    """无锁原子写meta——仅供已持写锁的 _update_meta 使用。"""
     try:
-        # BUG-14 修复：跨进程并发下用 advisory lock 防止多副本同时写覆盖
-        with _meta_lock("w"):
-            _atomic_json_write(_META_FILE, meta)
+        _atomic_json_write(_META_FILE, meta)
+        return True
     except (OSError, TypeError, ValueError) as e:
-        import sys
-        print(f"[WARN] _save_meta 失败: {e}", file=sys.stderr)
+        print(f"[WARN] _write_meta_nolock 失败: {e}", file=sys.stderr)
+        return False
+
+def _update_meta(merge_fn):
+    """P0-4：把「读-合并-写」放进同一把 LOCK_EX——原来读锁在合并前就释放，
+    多副本并发时后写者会用旧基线的合并结果整文件覆盖对方的进度。
+    merge_fn(disk_meta) 返回要写回的完整 meta；disk_meta 为 None（读失败）
+    时跳过写回。返回 True 表示已写回。"""
+    with _meta_lock("w"):
+        disk_meta = _read_meta_nolock()
+        if disk_meta is None:
+            return False
+        return _write_meta_nolock(merge_fn(disk_meta))
+
+def _load_meta():
+    """从磁盘读meta进度（共享锁）。读失败返回 None（调用方必须停止写回，避免丢档）。"""
+    with _meta_lock("r"):
+        return _read_meta_nolock()
+
+def _save_meta(meta):
+    """把meta进度写到磁盘（独占锁 + 原子写）。读-合并-写请走 _update_meta。"""
+    with _meta_lock("w"):
+        _write_meta_nolock(meta)
 
 def _meta_lock(mode):
     """跨进程文件锁 context manager。
@@ -98,8 +124,9 @@ def _meta_lock(mode):
             op = _f.LOCK_EX if mode == "w" else _f.LOCK_SH
             try:
                 _f.flock(fd, op)
-            except Exception:
-                pass  # flock 失败仍继续，不阻塞业务
+            except Exception as _e:
+                # P1-22：降级可以，但必须留痕——否则多副本互盖丢档时无从定位
+                print(f"[WARN] flock 失败，降级为无锁继续: {_e}", file=sys.stderr)
             class _UnixLock:
                 def __enter__(self): return self
                 def __exit__(self, *a):
@@ -119,8 +146,8 @@ def _meta_lock(mode):
                     msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
                 else:
                     msvcrt.locking(fd, msvcrt.LK_RLCK, 1)
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[WARN] msvcrt.locking 失败，降级为无锁继续: {_e}", file=sys.stderr)
             class _WinLock:
                 def __enter__(self): return self
                 def __exit__(self, *a):
@@ -134,8 +161,8 @@ def _meta_lock(mode):
                     except OSError: pass
                     return False
             return _WinLock()
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[WARN] _meta_lock 建锁失败，降级为无锁继续: {_e}", file=sys.stderr)
     return _NullLock()
 
 def _extract_meta(state):
@@ -208,7 +235,7 @@ def _cleanup_sessions():
             del _sessions[sid]
 
 
-def _compact_text(text, phase):
+def _compact_text(text):
     """压缩游戏输出——只去掉指令提示，保留所有叙事。叙事是游戏的魂。"""
     lines = text.split('\n')
     result = []
@@ -347,21 +374,31 @@ def index():
 @app.route('/new', methods=['POST'])
 def new_game():
     _init()
-    body = request.get_json(silent=True) or {}
+    # P1-19：body 非 dict（数组/字符串/数字）时旧代码 body.get 直接 500
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        body = {}
     seed = body.get("seed")
-    compact = body.get("compact", False)
+    # P1-19：seed 未校验就进 _det_rng.seed，list/dict 会 TypeError 500；
+    # bool 是 int 子类，需显式排除
+    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+        return jsonify({"error": "seed 必须是整数"}), 400
+    compact = bool(body.get("compact", False))
 
     with _lock:
         _cleanup_sessions()
         # 合并所有session的meta再存一次（避免逐个覆盖丢数据）
-        disk_meta = _load_meta()
-        meta_ok = disk_meta is not None
-        merged_meta = disk_meta if meta_ok else {}
-        for sid, (s, _, _) in _sessions.items():
-            session_meta = _extract_meta(s)
-            merged_meta = _merge_meta(merged_meta, session_meta)
-        if meta_ok:
-            _save_meta(merged_meta)
+        # P0-4：读-合并-写放进同一把文件锁
+        session_metas = [_extract_meta(s) for (s, _, _) in _sessions.values()]
+        merged_holder = {}
+        def _merge_with_disk(disk_meta):
+            merged = disk_meta
+            for sm in session_metas:
+                merged = _merge_meta(merged, sm)
+            merged_holder["merged"] = merged
+            return merged
+        meta_ok = _update_meta(_merge_with_disk)
+        merged_meta = merged_holder.get("merged") or {}
 
         state, text = _new_game(seed=seed)
         # 注入持久化的meta（echoes/killed_bosses等不因/new重置）
@@ -372,7 +409,7 @@ def new_game():
             # 服务端存状态，返回session_id
             session_id = uuid.uuid4().hex[:16]
             # 叙事完整保留，只去指令提示
-            compact_output = _compact_text(text, "init")
+            compact_output = _compact_text(text)
             # 从state直接提取摘要，不用反序列化DarkWorld
             status, last_words = _status_from_state(state)
             _sessions[session_id] = (state, time.time(), last_words)
@@ -393,10 +430,20 @@ def new_game():
 @app.route('/cmd', methods=['POST'])
 def cmd_game():
     _init()
-    body = request.get_json(silent=True) or {}
+    # P1-20：面向任意 AI 客户端的开放接口，类型不校验会一路 500
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"error": "请求体必须是 JSON 对象"}), 400
     instruction = body.get("cmd", "")
+    if not isinstance(instruction, str):
+        return jsonify({"error": "cmd 必须是字符串"}), 400
     session_id = body.get("session")
+    if session_id is not None and not isinstance(session_id, str):
+        # 非 str 的 session 会让 `session_id not in _sessions` 对不可哈希类型 TypeError
+        return jsonify({"error": "session 必须是字符串"}), 400
     state = body.get("state")
+    if state is not None and not isinstance(state, dict):
+        return jsonify({"error": "state 必须是对象"}), 400
     compact = body.get("compact", False) or (session_id is not None)
 
     if not instruction:
@@ -418,19 +465,18 @@ def cmd_game():
 
         new_state, output = _cmd(state, instruction)
 
-        # 持久化meta进度——合并磁盘上的meta再写，避免多session覆盖
-        disk_meta = _load_meta()
-        if disk_meta is not None:
-            session_meta = _extract_meta(new_state)
-            disk_meta = _merge_meta(disk_meta, session_meta)
-            _save_meta(disk_meta)
+        # 持久化meta进度——P0-4：读-合并-写放进同一把文件锁，
+        # 避免多副本并发时后写者用旧基线覆盖
+        def _merge_with_disk(disk_meta):
+            return _merge_meta(disk_meta, _extract_meta(new_state))
+        _update_meta(_merge_with_disk)
 
         if compact:
             # 存回服务端
             if session_id is None:
                 session_id = uuid.uuid4().hex[:16]
             # 叙事完整保留，只去指令提示
-            compact_output = _compact_text(output, "")
+            compact_output = _compact_text(output)
             # 从state直接提取摘要
             status, current_words = _status_from_state(new_state, last_words)
             _sessions[session_id] = (new_state, time.time(), current_words)

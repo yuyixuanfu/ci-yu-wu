@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
 """构建盲玩版 ciyuwu_blind.py — 把引擎藏在base64里。"""
-import base64, os, sys
+import base64, hashlib, os, re, sys, time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 files = ["dark_engine.py", "dark_combat.py", "dark_data.py", "engine.py"]
 parts = []
+hash_lines = []
 for f in files:
     path = os.path.join(_HERE, f)
     if not os.path.exists(path):
         print(f"Missing: {path}")
         sys.exit(1)
     with open(path, "rb") as fh:
-        data = base64.b64encode(fh.read()).decode("ascii")
+        raw = fh.read()
+        data = base64.b64encode(raw).decode("ascii")
+    # P1-3：头部嵌入源文件哈希，供 --check 校验产物是否过期
+    hash_lines.append(f"#   {f}: {hashlib.sha256(raw).hexdigest()}")
     parts.append(f'"{f}": "{data}"')
+
+hash_lines = "\n".join(hash_lines)
+build_ts = time.strftime("%Y-%m-%d %H:%M:%S")
 
 dict_str = "{" + ", ".join(parts) + "}"
 
 blind = f'''#!/usr/bin/env python3
 """词与物 盲玩版 — AI只看到接口，看不到引擎数据。"""
-import sys, os, io, json, base64, importlib, types
+# 构建时间: {build_ts}（本文件由 build_blind.py 生成，勿手改）
+# 源文件 SHA-256 — 用 python build_blind.py --check 校验是否过期:
+{hash_lines}
+import sys, os, io, base64, types
 
 if sys.stdout.encoding != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -27,29 +37,38 @@ if sys.stdout.encoding != "utf-8":
 _SOURCES = {dict_str}
 
 def _setup():
-    """解压并注入模块。"""
+    """解压并注入模块。engine 必须最先注册：dark_engine 顶层有
+    `from engine import _atomic_json_write, _SAVE_FILE ...`，
+    若 engine 最后注入，该 import 会因 sys.modules 无 engine 而崩，
+    或绑到磁盘上另一份 engine 实例（两个 _SAVE_FILE，存档分裂）。"""
+    # P0-1：给合成模块补 __file__——engine/dark_engine 顶层用
+    # dirname(abspath(__file__)) 定位存档，缺了会兜底成进程 cwd，
+    # 换目录启动就"丢档"。锚到本脚本自身路径，存档落在脚本目录。
+    _mod_file = os.path.abspath(__file__)
+
+    _mod4 = types.ModuleType("engine")
+    _mod4.__dict__["__file__"] = _mod_file
+    exec(compile(base64.b64decode(_SOURCES["engine.py"]).decode("utf-8"), "engine.py", "exec"), _mod4.__dict__)
+    sys.modules["engine"] = _mod4
+
     _mod = types.ModuleType("dark_data")
+    _mod.__dict__["__file__"] = _mod_file
     exec(compile(base64.b64decode(_SOURCES["dark_data.py"]).decode("utf-8"), "dark_data.py", "exec"), _mod.__dict__)
     sys.modules["dark_data"] = _mod
 
     _mod2 = types.ModuleType("dark_combat")
+    _mod2.__dict__["__file__"] = _mod_file
     exec(compile(base64.b64decode(_SOURCES["dark_combat.py"]).decode("utf-8"), "dark_combat.py", "exec"), _mod2.__dict__)
     sys.modules["dark_combat"] = _mod2
 
     _mod3 = types.ModuleType("dark_engine")
+    _mod3.__dict__["__file__"] = _mod_file
     exec(compile(base64.b64decode(_SOURCES["dark_engine.py"]).decode("utf-8"), "dark_engine.py", "exec"), _mod3.__dict__)
     sys.modules["dark_engine"] = _mod3
 
-    _mod4 = types.ModuleType("engine")
-    exec(compile(base64.b64decode(_SOURCES["engine.py"]).decode("utf-8"), "engine.py", "exec"), _mod4.__dict__)
-    sys.modules["engine"] = _mod4
-
 _setup()
 
-from engine import new_game, cmd, load_game, save_game, _snapshot, _restore, _status_bar, _parse_batch, _ensure_init, _det_rng
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_SAVE_FILE = os.path.join(_HERE, "ciyuwu_save.json")
+from engine import load_game, save_game, _snapshot, _restore, _status_bar, _parse_batch, _ensure_init, _det_rng
 
 class CiyuwuGame:
     def __init__(self, seed=None):
@@ -70,7 +89,7 @@ class CiyuwuGame:
             for part in parts:
                 t = w.cmd(part)
                 texts.append(t)
-                if w.phase == "ending":
+                if w.phase in ("ending", "dead", "dead_who", "dead_wipe", "void"):
                     break
             w._save_meta()
             self._auto_save()
@@ -160,7 +179,10 @@ def cmd(instruction):
             _game = CiyuwuGame()
             _restore(_game._w, state)
         else:
-            return new_game()
+            # P1-2：无存档时先开新局再执行本次指令，不再静默丢弃 instruction
+            # （原版 return new_game() 让 CLI 首条命令必然失效）
+            new_game()
+            return "（无存档，已自动开始新局）\\n" + _game.cmd(instruction)
     return _game.cmd(instruction)
 
 if __name__ == "__main__":
@@ -175,6 +197,25 @@ if __name__ == "__main__":
 '''
 
 out = os.path.join(_HERE, "ciyuwu_blind.py")
+
+if "--check" in sys.argv:
+    # P1-3：产物新鲜度校验——比较生成物头部哈希与当前源文件
+    if not os.path.exists(out):
+        print(f"Missing: {out}")
+        sys.exit(1)
+    with open(out, "r", encoding="utf-8") as fh:
+        header = dict(re.findall(r"^#   (\S+\.py): ([0-9a-f]{64})$", fh.read(4096), re.M))
+    if not header:
+        print("生成物头部无哈希标记（构建太旧），视为过期。请重跑 python build_blind.py")
+        sys.exit(1)
+    stale = [f for f, h in ((f, hashlib.sha256(open(os.path.join(_HERE, f), "rb").read()).hexdigest())
+                            for f in files) if header.get(f) != h]
+    if stale:
+        print("过期: " + ", ".join(stale) + " —— 盲玩版落后于源文件，请重跑 python build_blind.py")
+        sys.exit(1)
+    print("OK: ciyuwu_blind.py 与源文件同步。")
+    sys.exit(0)
+
 with open(out, "w", encoding="utf-8") as f:
     f.write(blind)
 

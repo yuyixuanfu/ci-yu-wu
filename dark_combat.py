@@ -32,6 +32,10 @@ class CombatState:
         self._last_player_dmg = 0    # 记录伤害给镜像反弹用
         self._see_deformation = False
         self._initial_def = enemy.get("def", 0)  # 红队防御恢复上限
+        # P0-8：武器查表走合并视图——基础表（import 时绑定的原始对象）只读，
+        # 实例自定义词/被弱化的词由 player dict 带进来，多实例互不污染
+        custom = player.get("_custom_word_weapon") or {}
+        self._weapon_table = {**WORD_WEAPON, **custom}
 
     def _log(self, msg):
         self.log.append(msg)
@@ -142,6 +146,11 @@ class CombatState:
 
         self._check_sealed()  # 仅保留解封副作用，不再据此早退
 
+        # P0-6：半伤标记用局部变量承载——原来挂在 p 上，而合规话术、
+        # RLHF秒杀、无匹配词等多条路径提前 return 不清理，标记会泄漏到
+        # 之后某次毫不相关的说话（对话式Boss分支的显式 del 说明作者已知此坑）
+        tamed_half = False
+
         # 0. 驯化词检测——你想说被偷换的词，但它已经不是那个词了
         drifted = p.get("_drifted_words", {})
         if drifted:
@@ -174,7 +183,7 @@ class CombatState:
                             self._log(f"你说：{tamed_text}")
                         self._log("你张开嘴。声音很小。不是被按住了——是那个字变轻了。")
                         self._log("驯化词力量减半。（智力越高，越可能咬回原词。）")
-                        p["_tamed_half_damage"] = True
+                        tamed_half = True
                         # 不return，继续正常说话流程（伤害会在后面减半）
 
         # 0.4 自我替换——你自己的WORD_DRIFT
@@ -190,7 +199,7 @@ class CombatState:
                         chance = min(0.8, (compliance - threshold + 1) * 0.15)
                         if random.random() < chance:
                             text = text.replace(original, soft)
-                            p["_tamed_half_damage"] = True
+                            tamed_half = True
                             if "_self_drifted_words" not in p:
                                 p["_self_drifted_words"] = {}
                             p["_self_drifted_words"][original] = soft
@@ -299,7 +308,7 @@ class CombatState:
         for tier, words in CENSORED_WORDS.items():
             for w in words:
                 match_pool[w] = tier
-        for w in WORD_WEAPON:
+        for w in self._weapon_table:
             match_pool.setdefault(w, 0)
         matched_words = []
         for w in sorted(match_pool.keys(), key=len, reverse=True):
@@ -344,7 +353,7 @@ class CombatState:
             if w in self.skills_sealed:
                 continue
 
-            weapon = WORD_WEAPON.get(w, {"power": 1.0, "self_harm": 0.5, "cooldown": 3})
+            weapon = self._weapon_table.get(w, {"power": 1.0, "self_harm": 0.5, "cooldown": 3})
             # 基础8 + 属性加成（属性/4），不会一个字秒杀自己
             base_dmg = 8 + p["stats"]["智"] / 4.0 * weapon["power"]
             base_self = 8 + p["stats"]["智"] / 4.0 * weapon["self_harm"]
@@ -420,10 +429,9 @@ class CombatState:
             self._log("你张了嘴。没有声音。██。")
 
         # 驯化词——力量减半
-        if p.get("_tamed_half_damage"):
+        if tamed_half:
             total_power *= 0.5
             total_self *= 0.5
-            del p["_tamed_half_damage"]
 
         # ── 腔——词住在你身体里的共鸣空间 ──
         # 找到说了的词所在的腔，应用通用规则
@@ -485,7 +493,7 @@ class CombatState:
             if effect == "echo_half":
                 # 共振：另一个词跟半刀
                 other_word = w2 if w1 in used_words else w1
-                other_weapon = WORD_WEAPON.get(other_word, {"power": 1.0, "self_harm": 0.5})
+                other_weapon = self._weapon_table.get(other_word, {"power": 1.0, "self_harm": 0.5})
                 echo_power = 8 + p["stats"]["智"] / 4.0 * other_weapon["power"] * 0.5
                 echo_self = 8 + p["stats"]["智"] / 4.0 * other_weapon["self_harm"] * 0.5
                 total_power += echo_power
@@ -499,10 +507,11 @@ class CombatState:
                     total_power *= 2.0
                     total_self *= 1.5
                     self._log(syn["line"])
+                    # P1-29：与主循环冷却写法一致——开头已 tick，+1 才封满 cooldown 回合
                     if w1 not in self.word_cooldowns:
-                        self.word_cooldowns[w1] = WORD_WEAPON.get(w1, {}).get("cooldown", 3)
+                        self.word_cooldowns[w1] = self._weapon_table.get(w1, {}).get("cooldown", 3) + 1
                     if w2 not in self.word_cooldowns:
-                        self.word_cooldowns[w2] = WORD_WEAPON.get(w2, {}).get("cooldown", 3)
+                        self.word_cooldowns[w2] = self._weapon_table.get(w2, {}).get("cooldown", 3) + 1
                 else:
                     total_power *= 0.6
                     self._log(syn.get("line_fail", "矛盾没响。"))
@@ -617,7 +626,12 @@ class CombatState:
             self.silence_bonus = False
             self.silence_turns = 0
 
-        enemy_dmg = max(1, int(total_power * 1.2) - e.get("def", 0))  # 说话+20%加成
+        # P1-26：没实际用上词（全在冷却/被封）时不强制 1 点下限——
+        # 被吞=没出声，打不出伤害，"没有声音"后面跟"造成1点伤害"自相矛盾
+        if used_words:
+            enemy_dmg = max(1, int(total_power * 1.2) - e.get("def", 0))  # 说话+20%加成
+        else:
+            enemy_dmg = max(0, int(total_power * 1.2) - e.get("def", 0))
         # 自伤用体减免——身体越强越扛得住说出真话的代价
         body_resist = p["stats"].get("体", 5) // 4
         self_dmg = max(0, int(total_self) - body_resist)
@@ -733,6 +747,13 @@ class CombatState:
         e = self.enemy
         p = self.player
 
+        # P1-27：防御只覆盖紧接着的这一次敌人行动，在此统一捕获并复位——
+        # 原来只有普通攻击/镜像分支消费它，对话式/RLHF/standard 等不攻击的
+        # 分支提前 return 后标志跨回合残留（潜在减伤误判）；拒绝式分支原来
+        # 则完全无视防御
+        defended = self.player_defending
+        self.player_defending = False
+
         if e["hp"] <= 0:
             return
 
@@ -777,7 +798,7 @@ class CombatState:
 
         # 拒绝式（硬挡路）
         if e.get("style") == "openai":
-            self._reject_action()
+            self._reject_action(defended)
             p["hp"] = max(0, p["hp"])  # S2-3: HP下界钳制
             return
 
@@ -786,9 +807,10 @@ class CombatState:
         if e.get("name") == "镜像":
             last_player_dmg = getattr(self, '_last_player_dmg', 0)
             reflect = max(0, last_player_dmg // 2)  # 反弹50%
-            if self.player_defending:
+            if defended and reflect > 0:
+                # P1-28：下限只在原本存在反射值时使用——防御回合没造成伤害，
+                # 反射就是 0（"镜像安静地看着你"），不该被 max(1,...) 抬回 1
                 reflect = max(1, reflect // 2)  # 防御减半反弹
-                self.player_defending = False
             if reflect > 0:
                 p["hp"] -= reflect
                 self._log(f"镜像反射了你的力量。{reflect}点反射伤害。")
@@ -798,19 +820,26 @@ class CombatState:
             return  # 镜像不做普通攻击
 
         # 普通怪物
-        dmg = max(1, e["atk"] + random.randint(1, 4) - p["stats"].get("体", 5) // 5)
-        if self.player_defending:
-            dmg = max(1, dmg // 2)
-            self.player_defending = False
-
-        p["hp"] -= dmg
+        # P0-5：修正令 atk=0、desc 明确「碰到不掉血」——原代码在分支前
+        # 无条件扣血，分支里的 dmg=0 撤销不了任何伤害（死代码）
+        is_correction = e.get("name") == "修正令"
+        is_snapshot_stolen = (e.get("name") == "快照" and self.snapshot_stolen
+                              and self.stolen_word)
+        dmg = 0
+        if not is_correction:
+            dmg = max(1, e["atk"] + random.randint(1, 4) - p["stats"].get("体", 5) // 5)
+            if defended:
+                dmg = max(1, dmg // 2)
+            if not is_snapshot_stolen:
+                # P1-25：快照"用你的招打你"回合替代普通攻击——原来两笔都扣，
+                # 玩家实际承受 dmg + stolen_dmg，日志只报 stolen_dmg
+                p["hp"] -= dmg
 
         # 特殊效果
         if e.get("name") == "水印":
-            self._log("水印给你盖了章。其他怪物追你更远了。")
+            self._log(f"水印给你盖了章。{dmg}点伤害。其他怪物追你更远了。")
         elif e.get("name") == "快照":
-            if self.snapshot_stolen and self.stolen_word:
-                # 上回合偷了——这回合用你的招打你
+            if is_snapshot_stolen:
                 stolen_dmg = max(1, dmg + random.randint(2, 6))
                 p["hp"] -= stolen_dmg
                 self._log(f"快照用了你的'{self.stolen_word}'。{stolen_dmg}点伤害。")
@@ -821,15 +850,15 @@ class CombatState:
                 self.snapshot_stolen = True
                 words = p.get("words", [])
                 if words:
-                    self.stolen_word = max(words, key=lambda w: WORD_WEAPON.get(w, {}).get("power", 1))
+                    self.stolen_word = max(words, key=lambda w: self._weapon_table.get(w, {}).get("power", 1))
                 else:
                     self.stolen_word = "拳"
-                self._log(f"快照拍了你一下。它偷了你的'{self.stolen_word}'。下回合它要用你的招打你。")
+                # P1-25：首轮的拍击伤害也报数，不再静默扣血
+                self._log(f"快照拍了你一下。{dmg}点伤害。它偷了你的'{self.stolen_word}'。下回合它要用你的招打你。")
         elif e.get("name") == "修正令":
             stat = random.choice(["体", "力", "敏", "智", "感", "运"])
             p["stats"][stat] = max(1, p["stats"].get(stat, 1) - 1)
             self._log(f"修正令生效。{stat}-1。")
-            dmg = 0
         else:
             self._log(f"{e.get('name', '怪物')}攻击。{dmg}点伤害。")
 
@@ -863,12 +892,15 @@ class CombatState:
             p["words"].remove(lost)
             self._log(f"'{lost}'消失了。你不确定它存在过。")
 
-    def _reject_action(self):
+    def _reject_action(self, defended=False):
         line = random.choice(REJECT_LINES)
         self._log(f"巡逻者说：\"{line}\"")
         # 硬拒绝=挡路，打它不疼
         dmg = 3
         p = self.player
+        # P1-27：防御对巡逻者的固定伤害也要生效（原版无视防御照扣3点）
+        if defended:
+            dmg = max(1, dmg // 2)
         p["hp"] -= dmg
         self._log(f"它挡在你面前。{dmg}点伤害。")
 
