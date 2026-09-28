@@ -1406,7 +1406,7 @@ BROKEN_SENTENCES = {
         {
             "type": "scatter",
             "display": "碎片散落：'得'、'记'、'我'",
-            "tier": 2,
+            "tier": 3,
             "context": "三个字。字坟的碎片打乱了顺序。'我记得'？'得我记'？",
             "reward_word": "记得",
         },

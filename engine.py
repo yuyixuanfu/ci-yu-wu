@@ -620,18 +620,23 @@ def cmd(state, instruction):
         if len(raw_parts) > _MAX_PARTS:
             # ISSUE-10 修复：声明截断，不再静默丢弃
             notes.append(f"?已截断：丢弃{len(raw_parts) - _MAX_PARTS}条超限指令（串联上限{_MAX_PARTS}）")
-        # BUG-15 修复：移除从未引用的 prev_phase 死代码
         texts = []
-        for part in parts:
+        for i, part in enumerate(parts):
+            prev_phase = w.phase
             w, t = _exec_with_batch(w, part)
             texts.append(t)
-            if w.phase == "ending":
-                break
             # phase大变（战斗结束、回镇、死亡等）就停
             # BUG-3 修复：从 break 列表移除 "fork"——分叉下玩家可继续多步操作
-            # （_auto_step 会自动决策左/右），不属于"大相位切换"
-            if w.phase in ("dead", "dead_who", "dead_wipe", "void", "town",
-                           "judgment", "creation", "init", "ending"):
+            # （_auto_step 会自动决策左/右），不属于"大相位切换"；
+            # 终止条件改为相位"跃迁"判断——原来用绝对相位成员判断，
+            # phase 保持 "town" 的指令（神殿/打工/商店）会让串联提前断掉，
+            # 静默吞掉后半截（如 "出镇 灰林;前进3"）；只有相位跃入终止集合才停
+            if w.phase != prev_phase and w.phase in (
+                    "dead", "dead_who", "dead_wipe", "void", "town",
+                    "judgment", "creation", "init", "ending", "combat"):
+                remaining = len(parts) - i - 1
+                if remaining > 0:
+                    notes.append(f"?中断：剩余{remaining}条指令未执行")
                 break
         full_text = "\n---\n".join(texts)
     else:

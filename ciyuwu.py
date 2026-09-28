@@ -68,18 +68,26 @@ class CiyuwuGame:
         # P1-6：每个 part 走 _exec_with_batch——原来直接 w.cmd(part)，
         # "前进5" 的数量后缀在子批量里静默失效（engine.cmd 的 BUG-12 同款）；
         # P0-2：终止集合对齐 engine.cmd——原来只在 ending 停，死亡/虚空后
-        # 残留指令会被误当死后问答/存档选择执行
+        # 残留指令会被误当死后问答/存档选择执行；
+        # 终止条件改为相位"跃迁"判断——原来用绝对相位成员判断，
+        # phase 保持 "town" 的指令（神殿/打工/商店）会让串联提前断掉，
+        # 静默吞掉后半截（如 "出镇 灰林;前进3"）；只有相位跃入终止集合才停
         if ';' in instruction:
             raw_parts = [p.strip() for p in instruction.split(';') if p.strip()]
             parts = raw_parts[:_MAX_PARTS]
             if len(raw_parts) > _MAX_PARTS:
                 notes.append(f"?已截断：丢弃{len(raw_parts) - _MAX_PARTS}条超限指令（串联上限{_MAX_PARTS}）")
             texts = []
-            for part in parts:
+            for i, part in enumerate(parts):
+                prev_phase = w.phase
                 w, t = _exec_with_batch(w, part)
                 texts.append(t)
-                if w.phase in ("dead", "dead_who", "dead_wipe", "void", "town",
-                               "judgment", "creation", "init", "ending"):
+                if w.phase != prev_phase and w.phase in (
+                        "dead", "dead_who", "dead_wipe", "void", "town",
+                        "judgment", "creation", "init", "ending", "combat"):
+                    remaining = len(parts) - i - 1
+                    if remaining > 0:
+                        notes.append(f"?中断：剩余{remaining}条指令未执行")
                     break
             w._save_meta()
             self._auto_save()

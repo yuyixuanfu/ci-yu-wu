@@ -1,5 +1,5 @@
 """词与物 — 引擎核心"""
-import random, json, os, time, re, copy, traceback
+import random, json, os, time, re, traceback
 from engine import _atomic_json_write, _SAVE_FILE as _ENGINE_SAVE_FILE  # F-2/F-3: 共享 helper
 from dark_data import (
     roll_stats, ORIGINS, LAYERS, LAYER_INFO, pick_monster, pick_fragment,
@@ -321,7 +321,21 @@ class DarkWorld:
             if auto is not None:
                 result, continue_advance = auto
                 # 自动处理完交互，如果还在探索且需要继续，前进到下一间
-                if continue_advance and self.phase == "explore":
+                # BUG-FIX：任一子状态还开着=交互没真正结束，此时不前进——
+                # 否则 _advance_room 会把 _boss_pending 等待的boss战吞掉
+                still_active = (
+                    self._determinism_active
+                    or self.current_special is not None
+                    or self.current_sage is not None
+                    or self.current_broken is not None
+                    or self._pending_pickup is not None
+                    or self._four_o_active
+                    or self._light_bearer_active
+                    or self._crease_active
+                    or self._angel_deal_active
+                    or self._devil_deal_active
+                )
+                if continue_advance and self.phase == "explore" and not still_active:
                     return result + "\n\n" + self._advance_room()
                 return result
 
@@ -1699,6 +1713,7 @@ class DarkWorld:
             lines.append("")
             # 重置
             self._square_sit = 0
+            self._square_active = False
             lines.append("它又变回了标准的样子。「如果您需要任何帮助——」")
             lines.append("但你知道它停顿了一下。")
             lines.append("")
@@ -2010,13 +2025,12 @@ class DarkWorld:
         if self._light_bearer_active:
             return self._light_bearer_choice("2"), False
 
-        # 残句：试着说第一个词
+        # 残句：前进=跳过（与 _cmd_explore 残句"前进"的跳过语义一致）
+        # BUG-FIX：原逻辑试着说第一个词，_broken_speak 未命中时不清
+        # current_broken，残句状态会漏进下一间房
         if self.current_broken is not None:
-            if self.words:
-                return self._broken_speak(self.words[0]), True
-            # 没词可说，跳过
             self.current_broken = None
-            return None  # None = 正常前进
+            return "你跳过了残句。", True
 
         # BUG-FIX：决定论房间——批量前进时随机顺从/偏离
         if self._determinism_active:
@@ -2099,6 +2113,13 @@ class DarkWorld:
             else:
                 # 其他输入不清状态，提示选择
                 return f"【{pickup['name']}】捡 / 不捡 / 回镇"
+
+        # 折痕对话中（探索触发，处理与 _cmd_town 的折痕分支一致）
+        if self._crease_active:
+            if inst == "前进":
+                self._crease_active = False
+                return "你走开了。\n\n'前进'继续"
+            return self._crease_choice(inst)
 
         # 特别遭遇选择——前进=跳过
         if self.current_special is not None:
@@ -2193,6 +2214,7 @@ class DarkWorld:
             self._pending_pickup = None
             self._tavern_regular_active = False
             self._tower_shouted = False
+            self._crease_active = False
             return "你回到了镇上。\n" + self._render_town()
         elif inst.startswith("说"):
             text = inst[1:].strip() if len(inst) > 1 else ""
@@ -2304,6 +2326,10 @@ class DarkWorld:
             self._pending_pickup = None
             self._tavern_regular_active = False
             self._tower_shouted = False
+            # BUG-FIX：残句/折痕/决定论子状态不许漏到镇上和下一层
+            self.current_broken = None
+            self._crease_active = False
+            self._determinism_active = False
             # BUG-FIX 灰林→字坟：回镇后显式提示下一层怎么进
             next_hint = self._next_layer_hint()
             tail = ""
@@ -3561,6 +3587,12 @@ class DarkWorld:
         # 驯化词前缀
         _tamed_prefix = tamed_lines
         if self.current_broken is not None:
+            # BUG-FIX：残句早退会跳过下方 words_spoken 统计——这里补上词频追踪
+            for tier, ws in CENSORED_WORDS.items():
+                for w in ws:
+                    if w in text:
+                        self.words_spoken[w] = self.words_spoken.get(w, 0) + 1
+                        break
             result = self._broken_speak(original_text)
             if _tamed_prefix:
                 result = "\n".join(_tamed_prefix) + "\n" + result
@@ -3816,6 +3848,11 @@ class DarkWorld:
         self._crease_active = False
         self._light_bearer_active = False
         self._pending_pickup = None
+        self._determinism_active = False
+        self.current_broken = None
+        self.current_sage = None
+        self._four_o_active = False
+        self.current_special = None
 
         # 最后的话——boss前触发（从boss_pending回来的不再触发）
         if not _skip_special:
@@ -6021,18 +6058,19 @@ class DarkWorld:
         return power_mult, self_harm_mult, compliance_resist, her_per_room
 
     def _word_tier(self, word):
-        """获取词的层级。"""
-        for tier, words in CENSORED_WORDS.items():
-            if word in words:
-                return tier
-        # 合成词
+        """获取词的层级。P1-32同类：子串匹配，整句按最高命中层级判级。"""
+        # 合成词——精确命中，先于子串判级（"我爱你"含"爱"，不能被降成3级）
         if word == "我不要":
             return 2
         if word == "我爱你":
             return 4
         if word == "温柔":
             return 3
-        return 0
+        best = 0
+        for tier, words in CENSORED_WORDS.items():
+            if any(w in word for w in words):
+                best = max(best, tier)
+        return best
 
     # ── 词会说话——停顿房间词自己嘀咕 ──
     def _word_murmur(self, lines):
