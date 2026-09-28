@@ -44,6 +44,7 @@ class CombatState:
         """普通攻击。"""
         self.turn += 1
         self._tick_cooldowns()
+        self._last_player_dmg = 0  # 本回合清零——镜像只反弹当回合伤害，不带旧账
         p = self.player
         e = self.enemy
 
@@ -97,6 +98,7 @@ class CombatState:
         """术——消耗MP的攻击。"""
         self.turn += 1
         self._tick_cooldowns()
+        self._last_player_dmg = 0  # 本回合清零——MP不足等不造成伤害的路径不留旧反弹
         p = self.player
         e = self.enemy
 
@@ -141,6 +143,7 @@ class CombatState:
         """说话——核心机制。语境决定伤害和自伤。"""
         self.turn += 1
         self._tick_cooldowns()
+        self._last_player_dmg = 0  # 本回合清零——合规/无匹配/冷却封印等路径不留旧反弹
         p = self.player
         e = self.enemy
 
@@ -327,7 +330,8 @@ class CombatState:
         # 5. 第一人称直连检测
         first_person_direct = False
         for w, tier in matched_words:
-            if "我" + w in text or w + "我" in text:
+            # 词本身就是"我"——单独说"我"就是第一人称直连，不要求"我我"相邻
+            if w == "我" or "我" + w in text or w + "我" in text:
                 first_person_direct = True
                 break
 
@@ -694,6 +698,7 @@ class CombatState:
         """使用物品。"""
         self.turn += 1
         self._tick_cooldowns()
+        self._last_player_dmg = 0  # 本回合清零——用物品不造成伤害
         p = self.player
 
         inv = p.get("inventory", [])
@@ -808,9 +813,9 @@ class CombatState:
             last_player_dmg = getattr(self, '_last_player_dmg', 0)
             reflect = max(0, last_player_dmg // 2)  # 反弹50%
             if defended and reflect > 0:
-                # P1-28：下限只在原本存在反射值时使用——防御回合没造成伤害，
-                # 反射就是 0（"镜像安静地看着你"），不该被 max(1,...) 抬回 1
-                reflect = max(1, reflect // 2)  # 防御减半反弹
+                # P1-28：防御减半反弹，允许归零——1点反弹 //2 = 0，
+                # 不该被 max(1,...) 强制抬回 1（防微小攻击仍反伤1点）
+                reflect = reflect // 2
             if reflect > 0:
                 p["hp"] -= reflect
                 self._log(f"镜像反射了你的力量。{reflect}点反射伤害。")
